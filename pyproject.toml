@@ -61,6 +61,11 @@ dev = [
     # tests, which is exactly the kind of gap a clean CI run finds and a local
     # one cannot.
     "aiosqlite>=0.20",
+    # Turns a hung test into a red one in seconds instead of a job that sits
+    # there until it is cancelled.  See the leaked-connection note in
+    # tests/…/orm/conftest.py: the failure mode is "187 passed" followed by an
+    # interpreter that never exits, which reports nothing at all.
+    "pytest-timeout>=2.3",
     "httpx>=0.27",
     "ruff>=0.1.0",
     "mypy>=1.10.0",
@@ -82,7 +87,9 @@ namespaces = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-m 'not benchmark'"
+# 120s per test.  Generous for anything here (the whole suite runs in ~3s), and
+# a 6-minute pytest run is a hang, not a slow test.
+addopts = "-m 'not benchmark' --timeout=120 --timeout-method=thread"
 markers = [
     "benchmark: performance benchmarks, excluded from the default run",
 ]

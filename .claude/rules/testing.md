@@ -31,6 +31,23 @@ pytest tests/ -m benchmark           # benchmarks, excluded by default
 
 `PYTHONPATH=src:tests` is required — tests are not installed.
 
+**Check the exit code, not the output.**  `pytest … | tail` returns when `tail`
+exits, which is not when pytest does.  A suite can print `187 passed` and then
+hang forever, and a pipeline hides exactly that — see "a test that never lets
+the process exit" below, which cost 25 minutes of CI through a `| tail`.
+
+## A test that never lets the process exit
+
+`aiosqlite` runs each connection on a **non-daemon** thread, so a leaked
+connection keeps the interpreter alive after the last test finishes.  Nothing
+fails; the job just sits there.  Two defences:
+
+* close every backend a fixture opened — note that `Model.configure()` is
+  **per-class**, so configuring two models opens two connections and closing one
+  is not closing both.  See `orm/conftest.py`.
+* `pytest-timeout` is in `addopts`, so a hang becomes a red test in seconds
+  rather than a cancelled job.
+
 ## What to test
 
 The JWKS cache and the verifier are the security-critical surface, and their

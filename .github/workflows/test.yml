@@ -74,6 +74,7 @@ jobs:
   sqlite:
     needs: preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -111,4 +112,8 @@ jobs:
       - name: Types
         run: mypy src/
       - name: Test
+        # `--timeout` comes from pyproject's addopts.  The job-level
+        # `timeout-minutes` is the backstop for a hang in something pytest
+        # cannot interrupt — an atexit handler, say.
         run: python -m pytest tests/ -v
+        timeout-minutes: 10

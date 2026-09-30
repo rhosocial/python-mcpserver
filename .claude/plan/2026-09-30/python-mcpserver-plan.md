@@ -334,7 +334,28 @@ argument 'name'`。所以 `>=1.0.0.dev30` 是对的 pin。
 可能装到不同的核心代码；一次绿灯不说明发布后能装到什么。
 dev30 发布后，改回版本 pin + 删掉 `preflight` 即可，其余不动。
 
-### 干净 venv 复现发现的第二个缺口
+### 第二个缺口：测试跑完但进程不退出（CI 卡 25 分钟）
+
+CI 的 Test 步骤日志显示 `187 passed in 2.88s`，然后**进程一直不退出**，
+25 分钟后被取消，清理日志里是 `Terminate orphan process: pid (2254) (python)`。
+
+原因：`aiosqlite` 把每条连接放在**非守护线程**上，而 `Model.configure()`
+是**按类**的——配两个模型就开两条连接，我在 fixture 里只关了一条。
+连接泄漏 → 解释器永不退出 → 测试全绿但 job 挂死。
+
+**为什么本地一直没发现**：我一直用 `pytest … | tail` 看结果，
+而管道的退出码来自 `tail`，不是 pytest。管道恰好把这类失败藏了起来。
+改成 `timeout 90 pytest …; echo $?` 后立刻复现（exit=124）。
+
+两道防线：
+
+1. fixture 在 teardown 里逐个模型 `disconnect()`；
+2. `pytest-timeout` 进 `addopts`（`--timeout=120 --timeout-method=thread`），
+   再挂也只是一个红测试，而不是一个被取消的 job。
+
+教训已写进 `.claude/rules/testing.md`：**看退出码，不看输出末尾。**
+
+### 干净 venv 复现发现的第三个缺口
 
 模拟 CI 的全新 venv 时又暴露一个本地永远看不到的问题：
 **`aiosqlite` 没在 `dev` extras 里**。核心库的异步 SQLite 后端在模块级
@@ -342,6 +363,10 @@ import 它，而本包没有任何地方提到它——我的本地 venv 是早�
 所以测试从没检验过依赖声明。已补。
 
 这与最初那次失败同源：**只存在于我机器上的依赖**。
+
+三个缺口同一个根因：本地环境比声明的环境更宽松。修法不是"以后小心"，
+而是把 CI 的步骤在一个全新 venv 里逐条复现——那样 25 分钟的挂死和
+一个缺失的依赖都会立刻现形。
 
 ## 9. 风险与已知代价
 

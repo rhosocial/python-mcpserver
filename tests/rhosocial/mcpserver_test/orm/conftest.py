@@ -107,16 +107,26 @@ async def tables(backend, config):
     await backend.execute(
         *_create_notes_index(dialect, TABLES).to_sql()
     )
-    # `Model.configure` is per-class, so each model is pointed at the same
-    # backend instance here.  A production service uses a shared pool
-    # published on a ContextVar instead — see schedule-manager's `db.py`; for a
-    # single-process test, one backend for both models is enough.
+    # `Model.configure` is per-class: each call builds its *own* backend and
+    # opens its *own* connection.  That is the trap schedule-manager's `db.py`
+    # exists to avoid, and a test that uses `configure` inherits it — so the
+    # teardown below closes them.
+    #
+    # Without this the pytest process finishes the tests and then never exits:
+    # aiosqlite runs each connection on a non-daemon thread, so a leaked
+    # connection keeps the interpreter alive indefinitely.  pytest reports
+    # "187 passed" and the job hangs until it is cancelled, which is how this
+    # cost 25 minutes of CI before it was found.
     await Note.configure(config, type(backend))
     await NotePrincipal.configure(config, type(backend))
     # The ownership hooks resolve through this; a process serves one service, so
     # there is exactly one projection table.
     NotePrincipal.register_as_projection()
-    return TABLES
+    try:
+        yield TABLES
+    finally:
+        for model in (Note, NotePrincipal):
+            await model.backend().disconnect()
 
 
 def _create_notes_table(dialect, table: str):
