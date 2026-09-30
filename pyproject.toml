@@ -1,0 +1,109 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rhosocial-mcpserver"
+version = "0.1.0.dev1"
+description = "MCP Resource Server foundation for rhosocial-activerecord services: local JWT/JWKS verification, per-tool scope enforcement, principal projection"
+readme = "README.md"
+license = { file = "LICENSE" }
+
+# The MCP SDK v2 floor is 3.10 (it needs PEP 604 unions at runtime and
+# starlette>=0.48).  This library sits directly on the SDK, so it inherits the
+# floor rather than the core library's 3.8.
+requires-python = ">=3.10"
+
+authors = [
+    { name = "rhosocial", email = "dev@rhosocial.org" }
+]
+keywords = [
+    "mcp", "model-context-protocol", "oauth", "oauth2", "jwt", "jwks",
+    "resource-server", "authorization", "activerecord", "mcp-server",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    # Core ORM — the ORM mixins and the scoped/owned query classes build on it.
+    "rhosocial-activerecord>=1.0.0.dev30",
+    # MCP SDK v2 — supplies MCPServer, TokenVerifier, AuthContextMiddleware and
+    # the RFC 9728 metadata handler this library configures.
+    "mcp>=2.1.0",
+    # JWT verification with asymmetric algorithms.  The MCP SDK already pulls
+    # pyjwt[crypto]; this states it because it is imported directly here, and a
+    # transitive dependency is not a contract.
+    "pyjwt[crypto]>=2.10.1",
+    "pydantic>=2.12.0",
+    "typing-extensions>=4.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "asgi-lifespan>=2.1",
+    "httpx>=0.27",
+    "ruff>=0.1.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+rhosocial-mcpserver = "rhosocial.mcpserver.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rhosocial/python-mcpserver"
+Repository = "https://github.com/rhosocial/python-mcpserver.git"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# rhosocial/ is a PEP 420 namespace so this can coexist with
+# rhosocial.activerecord and rhosocial.user in one environment.
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-m 'not benchmark'"
+markers = [
+    "benchmark: performance benchmarks, excluded from the default run",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "UP"]
+ignore = [
+    "B008",  # function call in argument defaults — not used here, but harmless
+    "B024",  # abstract base classes without abstract methods are intentional
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["rhosocial.activerecord.*"]
+ignore_missing_imports = true
+
+# Third-party sources use syntax newer than the 3.10 analysis target.
+[[tool.mypy.overrides]]
+module = ["mcp.*", "mcp_types.*", "anyio.*", "httpx.*", "httpx2.*", "starlette.*"]
+ignore_missing_imports = true
