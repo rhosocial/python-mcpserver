@@ -301,15 +301,47 @@ CI 两次推送都是红的，**不是私有仓计费**——GitHub Actions 正�
 5. 版本上报改用 `importlib.metadata`——核心库是 PEP 420 命名空间包，
    没有 `__version__` 属性。
 
-### 待用户拍板（阻塞下游）
+### 决定：走 B（2026-09-30）
 
-| 方案 | 做法 | 代价 |
+核心库的 `feature/readonly-object-type-query-named-examples` 已 push，
+CI 的 `CORE_SOURCE` 指向它。`pyproject.toml` **仍保留版本 specifier**，
+不写成 git URL——PyPI 上传时会拒绝直接 URL 依赖，且从索引装本包的消费者
+也无法 clone 核心库。
+
+### 为什么 `dev29` 真的不行（实测，不是推断）
+
+试过让代码兼容 `dev29`，用干净 venv 跑完整套件，两处硬伤：
+
+| 需要的东西 | dev29 | dev30 |
 |---|---|---|
-| **A（推荐）** | 合并并发布 `python-activerecord` `dev30`（或 `dev31`） | 核心库的发布流程；之后本仓与下游都切回版本 pin，一劳永逸 |
-| B（临时） | push 核心库的特性分支，CI 指向它 | 内部可用；但从 PyPI 装本包的消费者拿不到，等于把问题推给下游 |
+| `IDataPreparationBehavior`（`PrincipalOwnedMixin` 继承的保存钩子） | 无（只有 `IUpdateBehavior`） | 有 |
+| `ColumnConstraint` | 纯 dataclass，**不带 dialect** | `BaseExpression`，构造首参是 dialect |
+| 保存钩子的派发方式 | `base.py:1056` 用 `hasattr` 鸭子派发 | 显式接口 |
 
-在 A 或 B 落地前，本仓 CI 会在 `preflight` 处**如实变红**——
-这是正确的失败方式，不是新的故障。
+第一项其实**可以**绕过——`hasattr` 派发意味着只要定义方法即可，无需继承。
+但第二项不行：`orm/ddl.py` 的 `column()` 助手按 dev30 的签名构造
+`ColumnConstraint`，在 dev29 上直接 `TypeError: got multiple values for
+argument 'name'`。所以 `>=1.0.0.dev30` 是对的 pin。
+
+顺带记一个反直觉的点：绕过继承会**主动隐藏**版本差异。
+若某天核心库把派发改成「只认显式接口继承」，软导入就会静默失效——
+`prepare_save_data` 不再被调用，归属强制消失且无人报错。
+宁可保持硬导入、让缺 API 在 import 时就说清楚。
+
+### B 的代价（已记录在 workflow 注释里）
+
+`CORE_SOURCE` 指向的是**分支**而非 tag：它会移动，同一 commit 的两次 CI
+可能装到不同的核心代码；一次绿灯不说明发布后能装到什么。
+dev30 发布后，改回版本 pin + 删掉 `preflight` 即可，其余不动。
+
+### 干净 venv 复现发现的第二个缺口
+
+模拟 CI 的全新 venv 时又暴露一个本地永远看不到的问题：
+**`aiosqlite` 没在 `dev` extras 里**。核心库的异步 SQLite 后端在模块级
+import 它，而本包没有任何地方提到它——我的本地 venv 是早先手工装上的，
+所以测试从没检验过依赖声明。已补。
+
+这与最初那次失败同源：**只存在于我机器上的依赖**。
 
 ## 9. 风险与已知代价
 
@@ -321,5 +353,5 @@ CI 两次推送都是红的，**不是私有仓计费**——GitHub Actions 正�
 | 下游两服务同时改导致各自半新半旧 | `AUTH_ISSUER` 双校验器并行 2 个版本后再删本地表 |
 | `register_projection` 是进程级全局 | 设计如此：一个进程服务一个服务，所以只有一个答案。测试里显式清空，并在 `PrincipalResolution` 上留 `resolve_projection=False` 供不使用 ORM 归属层的服务显式关掉 |
 | SDK 升级改动 `streamable_http_app` 签名 | 端到端测试用官方客户端跑通全流程，会先于下游服务发现 |
-| 本地绿 ≠ CI 绿 | 本地全部测试跑的是**特性分支的 editable 安装**，不是任何可发布产物。`preflight` 就是为此加的：让「pin 不可获取」这一类错误在 5 秒内以一行字失败，而不是在一次依赖解析里 |
+| 本地绿 ≠ CI 绿 | 本地全部测试跑的是**特性分支的 editable 安装**，不是任何可发布产物。`preflight` 是为此加的：让「pin 不可获取」在 5 秒内以一行字失败。**并且**任何依赖声明的改动，都要在一个全新 venv 里按 CI 的步骤复现一遍才算验证过——`aiosqlite` 就是这么漏的 |
 | 本库成为「什么都往里塞」的垃圾桶 | §1.3 的六条「不做」是验收项，不是建议 |
