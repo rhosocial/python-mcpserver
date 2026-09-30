@@ -269,6 +269,48 @@ mypy src/                 # 类型
 `auth` 的 `MCPServer` 会**把工具开放给所有人且不发一言**——所以
 `build_mcp_app()` 检查而非假设，漏传直接抛 `ConfigurationError`。
 
+## 8.5 阻塞项：核心库 `1.0.0.dev30` 未发布（2026-09-30）
+
+CI 两次推送都是红的，**不是私有仓计费**——GitHub Actions 正常执行了 19 秒，
+两个 job 都死在依赖解析。要点记录在此，因为它改变了下游的排期。
+
+### 事实
+
+| | |
+|---|---|
+| 本仓 `pyproject.toml` pin | `rhosocial-activerecord>=1.0.0.dev30` |
+| PyPI 最新 | `1.0.0.dev29` |
+| `python-activerecord` 公网 `main` | `1.0.0.dev29` |
+| `dev30` 在哪 | 仅存在于本机 `feature/readonly-object-type-query-named-examples`（commit `436a233d`），**该分支未 push** |
+| `dev29` 是否够用 | 不够。`interface/update.py` 里只有 `IUpdateBehavior`，没有 `IDataPreparationBehavior`——`PrincipalOwnedMixin` 继承的正是后者 |
+
+所以 pin 是**对的**，问题在于被 pin 的版本从未离开过这台机器，
+而 CI runner 拿不到任何含它的东西。
+
+### 已修（本次提交）
+
+1. **删掉 workflow 里的 `pip install -e ../python-activerecord`。** 它在
+   runner 上永远失败（那个路径不存在），而且 `||` 只兜 exit code，
+   仍会先打印一句误导性的 `not a valid editable requirement`。
+2. **新增 `scripts/check_core_version.py`**，在安装前检查 pin 是否可获取，
+   失败时直接说明「索引上最新是 dev29」而不是抛一堵 `ResolutionImpossible`。
+   单独一个 `preflight` job，因为这是最难诊断的那类失败。
+3. **`CORE_SOURCE` 收敛成 workflow 顶部一个变量**，附注了何时切回版本 pin。
+4. **删掉 `published-core` job。** 在 dev30 发布前它恒红，
+   恒红的 job 会训练所有人忽略红色。
+5. 版本上报改用 `importlib.metadata`——核心库是 PEP 420 命名空间包，
+   没有 `__version__` 属性。
+
+### 待用户拍板（阻塞下游）
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A（推荐）** | 合并并发布 `python-activerecord` `dev30`（或 `dev31`） | 核心库的发布流程；之后本仓与下游都切回版本 pin，一劳永逸 |
+| B（临时） | push 核心库的特性分支，CI 指向它 | 内部可用；但从 PyPI 装本包的消费者拿不到，等于把问题推给下游 |
+
+在 A 或 B 落地前，本仓 CI 会在 `preflight` 处**如实变红**——
+这是正确的失败方式，不是新的故障。
+
 ## 9. 风险与已知代价
 
 | 风险 | 处置 |
@@ -279,4 +321,5 @@ mypy src/                 # 类型
 | 下游两服务同时改导致各自半新半旧 | `AUTH_ISSUER` 双校验器并行 2 个版本后再删本地表 |
 | `register_projection` 是进程级全局 | 设计如此：一个进程服务一个服务，所以只有一个答案。测试里显式清空，并在 `PrincipalResolution` 上留 `resolve_projection=False` 供不使用 ORM 归属层的服务显式关掉 |
 | SDK 升级改动 `streamable_http_app` 签名 | 端到端测试用官方客户端跑通全流程，会先于下游服务发现 |
+| 本地绿 ≠ CI 绿 | 本地全部测试跑的是**特性分支的 editable 安装**，不是任何可发布产物。`preflight` 就是为此加的：让「pin 不可获取」这一类错误在 5 秒内以一行字失败，而不是在一次依赖解析里 |
 | 本库成为「什么都往里塞」的垃圾桶 | §1.3 的六条「不做」是验收项，不是建议 |
