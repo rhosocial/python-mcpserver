@@ -29,7 +29,6 @@ from rhosocial.activerecord.backend.expression.statements import (
     ColumnDefinition,
 )
 
-from ..tables import TableNamespace
 from .principal import (
     CENTRAL_USER_ID,
     ID,
@@ -48,14 +47,14 @@ __all__ = [
     "create_projection_schema",
     "drop_projection_schema",
     "serial_type_for",
-    "BARE_PRINCIPALS",
+    "PRINCIPALS",
     "TIMESTAMP",
 ]
 
-#: The projection table's name *without* the service prefix.  `TableNamespace
-#: .table` adds it; `TableNamespace.index` expects it bare.  Naming it once
-#: here means the two cannot be handed inconsistent forms.
-BARE_PRINCIPALS = "principals"
+#: The projection table. A literal, not a name plus a configurable prefix: this
+#: package declares one table, and a deployment that needs another name
+#: overrides ``Model.table_name()`` and passes the same string here.
+PRINCIPALS = "mcp_principals"
 
 
 def serial_type_for(dialect: SQLDialectBase) -> str:
@@ -86,7 +85,6 @@ TIMESTAMP = "TIMESTAMP WITH TIME ZONE"
 
 def create_projection_table(
     dialect: SQLDialectBase,
-    tables: TableNamespace,
     *,
     extra_columns: Sequence[Any] = (),
 ) -> CreateTableExpression:
@@ -95,7 +93,7 @@ def create_projection_table(
     :param extra_columns: service-private ``ColumnDefinition`` objects, built
         by the caller so this module does not have to know their types.
     """
-    table = tables.table(BARE_PRINCIPALS)
+    table = PRINCIPALS
     return CreateTableExpression(
         dialect=dialect,
         table=table,
@@ -117,7 +115,6 @@ def create_projection_table(
 
 def projection_indexes(
     dialect: SQLDialectBase,
-    tables: TableNamespace,
 ) -> tuple[CreateIndexExpression, ...]:
     """Indexes for the projection table.
 
@@ -133,11 +130,11 @@ def projection_indexes(
     # `index` takes the *bare* table name; passing the already-prefixed one
     # would produce `idx_t_t_principals_...`, which is a valid identifier and so
     # would be created without complaint.
-    table = tables.table(BARE_PRINCIPALS)
+    table = PRINCIPALS
     return (
         CreateIndexExpression(
             dialect,
-            tables.index(BARE_PRINCIPALS, CENTRAL_USER_ID),
+            f"idx_{PRINCIPALS}_CENTRAL_USER_ID",
             table,
             [CENTRAL_USER_ID],
             unique=True,
@@ -145,7 +142,7 @@ def projection_indexes(
         ),
         CreateIndexExpression(
             dialect,
-            tables.index(BARE_PRINCIPALS, STATUS),
+            f"idx_{PRINCIPALS}_STATUS",
             table,
             [STATUS],
             if_not_exists=True,
@@ -155,7 +152,6 @@ def projection_indexes(
 
 def drop_projection_table(
     dialect: SQLDialectBase,
-    tables: TableNamespace,
 ) -> DropTableExpression:
     """``DROP TABLE IF EXISTS`` for the projection table.
 
@@ -163,7 +159,7 @@ def drop_projection_table(
     dropping another service's tables would destroy its data.
     """
     return DropTableExpression(
-        dialect=dialect, table=tables.table(BARE_PRINCIPALS), if_exists=True
+        dialect=dialect, table=PRINCIPALS, if_exists=True
     )
 
 
@@ -218,7 +214,6 @@ def column(
 
 async def create_projection_schema(
     backend: Any,
-    tables: TableNamespace,
     *,
     extra_columns: Sequence[Any] = (),
 ) -> list[str]:
@@ -234,20 +229,22 @@ async def create_projection_schema(
     dialect = backend.dialect
     statements: list[str] = []
     for expression in (
-        create_projection_table(dialect, tables, extra_columns=extra_columns),
-        *projection_indexes(dialect, tables),
+        create_projection_table(dialect, extra_columns=extra_columns),
+        *projection_indexes(dialect),
     ):
         await backend.execute(*expression.to_sql())
         statements.append(str(expression.to_sql()[0]))
     return statements
 
 
-async def drop_projection_schema(backend: Any, tables: TableNamespace) -> str:
+async def drop_projection_schema(backend: Any) -> str:
     """Drop the projection table if present.  Returns the SQL run.
 
-    Only ever touches a prefixed name.  A service's database may be shared with
-    another service, and dropping another service's tables destroys its data.
+    Touches only ``mcp_principals``.  A service's database may be shared with
+    another service, and dropping another service's tables destroys its data --
+    which is the reason the table name is a literal in one place rather than a
+    prefix a caller could point somewhere else.
     """
-    expression = drop_projection_table(backend.dialect, tables)
+    expression = drop_projection_table(backend.dialect)
     await backend.execute(*expression.to_sql())
     return str(expression.to_sql()[0])

@@ -35,7 +35,6 @@ Typical wiring::
             "list_schedules": "schedules:read",
             "create_schedule": "schedules:write",
         },
-        table_prefix="sm",
     )
     cache = JwksCache(config.jwks_uri)
     verifier = JwtTokenVerifier(
@@ -112,7 +111,6 @@ from .orm import (
     registered_projection,
 )
 from .scopes import NO_SCOPE, ScopePolicy, ScopeSet
-from .tables import TableNamespace
 from .verifier import JwtTokenVerifier
 
 __version__ = "0.1.0.dev1"
@@ -172,7 +170,6 @@ __all__ = [
     "create_projection_table",
     "projection_indexes",
     "drop_projection_table",
-    "TableNamespace",
     "CENTRAL_USER_ID",
     "STATUS_ACTIVE",
     "STATUS_SUSPENDED",

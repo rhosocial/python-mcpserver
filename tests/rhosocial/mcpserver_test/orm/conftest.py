@@ -22,16 +22,22 @@ from rhosocial.mcpserver import (
     PrincipalMixin,
     PrincipalOwnedMixin,
     PrincipalScopedQuery,
-    TableNamespace,
     create_projection_table,
     ensure_principal_id,
     projection_indexes,
 )
 from rhosocial.mcpserver.identity import set_current_principal
 
-TABLES = TableNamespace("t_")
+#: Imported, not redefined.  A test that spelled the projection table out for
+#: itself could drift from the DDL builder, and then every test in this file
+#: fails with "no such table" -- which is loud, but it fails for a reason that
+#: has nothing to do with what the tests are checking.
+from rhosocial.mcpserver.orm.ddl import PRINCIPALS  # noqa: E402
 
-__table_name__ = TABLES.table("notes")
+#: The test's own table, prefixed so it cannot be mistaken for a service table.
+NOTES = "t_notes"
+
+__table_name__ = NOTES
 __query_class__ = PrincipalScopedQuery
 
 
@@ -42,7 +48,7 @@ class NotePrincipal(AsyncActiveRecord, PrincipalMixin):
     ``orm/principal.py``.
     """
 
-    __table_name__ = TABLES.table("principals")
+    __table_name__ = PRINCIPALS
     __pk_auto_generated__ = True
 
     c: ClassVar[FieldProxy] = FieldProxy()
@@ -61,7 +67,7 @@ class NotePrincipal(AsyncActiveRecord, PrincipalMixin):
 class Note(PrincipalOwnedMixin, AsyncActiveRecord):
     """A row owned by exactly one principal."""
 
-    __table_name__ = TABLES.table("notes")
+    __table_name__ = NOTES
     __pk_auto_generated__ = True
     __query_class__ = PrincipalScopedQuery
 
@@ -97,15 +103,15 @@ async def tables(backend, config):
     """Create the projection table and the note table."""
     dialect = backend.dialect
     for expression in (
-        create_projection_table(dialect, TABLES),
-        *projection_indexes(dialect, TABLES),
+        create_projection_table(dialect),
+        *projection_indexes(dialect),
     ):
         await backend.execute(*expression.to_sql())
     await backend.execute(
-        *_create_notes_table(dialect, TABLES.table("notes")).to_sql()
+        *_create_notes_table(dialect, NOTES).to_sql()
     )
     await backend.execute(
-        *_create_notes_index(dialect, TABLES).to_sql()
+        *_create_notes_index(dialect).to_sql()
     )
     # `Model.configure` is per-class: each call builds its *own* backend and
     # opens its *own* connection.  That is the trap schedule-manager's `db.py`
@@ -122,11 +128,9 @@ async def tables(backend, config):
     # The ownership hooks resolve through this; a process serves one service, so
     # there is exactly one projection table.
     NotePrincipal.register_as_projection()
-    try:
-        yield TABLES
-    finally:
-        for model in (Note, NotePrincipal):
-            await model.backend().disconnect()
+    yield NOTES
+    for model in (Note, NotePrincipal):
+        await model.backend().disconnect()
 
 
 def _create_notes_table(dialect, table: str):
@@ -146,13 +150,13 @@ def _create_notes_table(dialect, table: str):
     )
 
 
-def _create_notes_index(dialect, tables: TableNamespace):
+def _create_notes_index(dialect):
     from rhosocial.activerecord.backend.expression import CreateIndexExpression
 
     return CreateIndexExpression(
         dialect,
-        tables.index(tables.table("notes"), "principal_id"),
-        tables.table("notes"),
+        f"idx_{NOTES}_principal_id",
+        NOTES,
         ["principal_id"],
         if_not_exists=True,
     )

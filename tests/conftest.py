@@ -221,7 +221,6 @@ def config() -> Any:
             "list_schedules": "schedules:read",
             "create_schedule": "schedules:write",
         },
-        table_prefix="sm",
     )
 
 

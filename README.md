@@ -55,13 +55,10 @@ from rhosocial.mcpserver import (
     PrincipalOwnedMixin,
     PrincipalScopedQuery,
     ResourceServerConfig,
-    TableNamespace,
     auth_settings,
     build_mcp_app,
     serve,
 )
-
-tables = TableNamespace("sm")          # one prefix; every name derives from it
 
 CONFIG = ResourceServerConfig(
     resource="https://calendar.example.com/mcp",   # RFC 8707 resource id == aud
@@ -72,7 +69,6 @@ CONFIG = ResourceServerConfig(
         "list_schedules": "schedules:read",
         "create_schedule": "schedules:write",
     },
-    table_prefix="sm",
 )
 
 verifier = JwtTokenVerifier(
@@ -87,7 +83,7 @@ Models:
 
 ```python
 class ContactPrincipal(AsyncActiveRecord, PrincipalMixin):
-    __table_name__ = tables.table("principals")
+    __table_name__ = "mcp_principals"      # a literal; this package declares one table
     __pk_auto_generated__ = True
 
     id: Optional[int] = None
@@ -99,7 +95,7 @@ class ContactPrincipal(AsyncActiveRecord, PrincipalMixin):
 
 
 class Contact(PrincipalOwnedMixin, AsyncActiveRecord):
-    __table_name__ = tables.table("contacts")
+    __table_name__ = "cm_contacts"
     __pk_auto_generated__ = True
     __query_class__ = PrincipalScopedQuery
 

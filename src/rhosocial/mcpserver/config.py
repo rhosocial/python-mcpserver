@@ -19,7 +19,6 @@ from typing import Any
 
 from .errors import ConfigurationError
 from .scopes import NO_SCOPE, ScopePolicy, ScopeSet
-from .tables import TableNamespace
 
 __all__ = ["ResourceServerConfig", "PRM_PATH", "MCP_PATH", "HEALTH_PATH"]
 
@@ -51,7 +50,6 @@ class ResourceServerConfig:
         :data:`~rhosocial.mcpserver.scopes.NO_SCOPE` for a tool needing none.
     :param audience: accepted ``aud`` values, when the AS does not bind tokens
         to the resource URL.  Defaults to ``[resource]``.
-    :param table_prefix: this service's SQL name prefix.
     :param service_name: the human-readable name published in the PRM document.
     :param algorithms: accepted asymmetric signing algorithms.
     :param leeway_seconds: clock-skew tolerance for ``exp``/``nbf``.
@@ -81,7 +79,6 @@ class ResourceServerConfig:
         "_jwks_uri",
         "_policy",
         "_audience",
-        "_tables",
         "_service_name",
         "_algorithms",
         "_leeway",
@@ -97,7 +94,6 @@ class ResourceServerConfig:
         tool_scopes: Mapping[str, str],
         jwks_uri: str | None = None,
         audience: Any = (),
-        table_prefix: str = "mcpserver",
         service_name: str | None = None,
         algorithms: Any = ("ES256", "RS256", "EdDSA"),
         leeway_seconds: int = 300,
@@ -125,7 +121,6 @@ class ResourceServerConfig:
             tool_scopes=tool_scopes,
         )
         self._audience = tuple(audience) or (resource,)
-        self._tables = TableNamespace(table_prefix)
         self._service_name = service_name or _default_service_name(resource)
         self._algorithms = tuple(algorithms)
         self._leeway = int(leeway_seconds)
@@ -176,10 +171,6 @@ class ResourceServerConfig:
         return self._policy
 
     @property
-    def tables(self) -> TableNamespace:
-        return self._tables
-
-    @property
     def scopes_supported(self) -> tuple[str, ...]:
         return self._policy.scopes_supported
 
@@ -228,7 +219,6 @@ class ResourceServerConfig:
         resource: str | None = None,
         issuer: str | None = None,
         jwks_uri: str | None = None,
-        table_prefix: str | None = None,
         service_name: str | None = None,
     ) -> ResourceServerConfig:
         """Build from environment variables named ``<PREFIX>_*``.
@@ -244,7 +234,6 @@ class ResourceServerConfig:
             jwks_uri=jwks_uri or table.get("JWKS_URI"),
             scopes=scopes,
             tool_scopes=tool_scopes,
-            table_prefix=table_prefix or table.get("TABLE_PREFIX") or "mcpserver",
             service_name=service_name or table.get("SERVICE_NAME"),
         )
 

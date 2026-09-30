@@ -217,12 +217,12 @@ def clear_principal_id(token: ResetToken) -> None:
 
 
 class PrincipalMixin:
-    """Gives a model the ``<prefix>_principals`` table's shape and behaviour.
+    """Gives a model the ``mcp_principals`` table's shape and behaviour.
 
     Compose onto a model that *is* the projection::
 
         class ContactPrincipal(AsyncActiveRecord, PrincipalMixin):
-            __table_name__ = tables.table("principals")
+            __table_name__ = "mcp_principals"
 
     The mixin provides :meth:`resolve` — find-or-create by ``central_user_id``
     — and the column-name constants.  It does not add columns: the model

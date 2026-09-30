@@ -66,7 +66,6 @@ def make_config() -> ResourceServerConfig:
             "list_notes": "notes:read",
             "add_note": "notes:write",
         },
-        table_prefix="t",
     )
 
 
@@ -553,7 +552,6 @@ def _strict_config() -> ResourceServerConfig:
         issuer=ISSUER,
         scopes=["notes:read"],
         tool_scopes={"whoami": NO_SCOPE},
-        table_prefix="t",
         enforce_protocol_revision=True,
     )
 

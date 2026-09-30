@@ -38,7 +38,7 @@ class PrincipalScopedQuery(AsyncActiveQuery):
     Compose onto a model that *owns* rows::
 
         class Schedule(AsyncActiveRecord):
-            __table_name__ = tables.table("schedules")
+            __table_name__ = "sm_schedules"
             __query_class__ = PrincipalScopedQuery
     """
 

@@ -94,7 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
     prm.add_argument(
         "--tools", help="comma-separated tool=scope map, or tool: for a tool needing none"
     )
-    prm.add_argument("--table-prefix", default="mcpserver")
 
     policy = sub.add_parser("policy", help="check the tool-to-scope map")
     policy.add_argument(
@@ -271,7 +270,6 @@ def _prm(args: argparse.Namespace) -> int:
         scopes=scopes,
         tool_scopes=tools,
         jwks_uri=args.jwks_uri,
-        table_prefix=args.table_prefix,
     )
     print(json.dumps(protected_resource_metadata(config), indent=2))
     return EXIT_OK

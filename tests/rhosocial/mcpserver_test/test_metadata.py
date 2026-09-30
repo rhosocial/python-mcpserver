@@ -64,7 +64,6 @@ def test_service_name_is_derived_from_the_resource() -> None:
         issuer=ISSUER,
         scopes=["a:read"],
         tool_scopes={"r": "a:read"},
-        table_prefix="sm",
     )
 
     assert config.service_name == "calendar.example.com/mcp"
@@ -183,7 +182,6 @@ def test_config_can_be_built_from_the_environment(monkeypatch, config) -> None:
     )
 
     assert built.resource == RESOURCE
-    assert built.tables.prefix == "sm"
 
 
 def test_missing_environment_variable_names_itself(monkeypatch) -> None:
