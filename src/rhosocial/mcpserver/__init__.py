@@ -48,15 +48,6 @@ Typical wiring::
 
 from __future__ import annotations
 
-from .app import (
-    DEFAULT_BIND_HOST,
-    DEFAULT_BIND_PORT,
-    BindSettings,
-    auth_settings,
-    build_asgi_app,
-    build_mcp_app,
-    serve,
-)
 from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
 from .credentials import CredentialSource
 from .errors import (
@@ -76,14 +67,23 @@ from .identity import (
     set_cli_principal,
     set_current_principal,
 )
-from .jwks import Jwk, JwksCache, JwkSet
-from .metadata import (
+from .mcp.app import (
+    DEFAULT_BIND_HOST,
+    DEFAULT_BIND_PORT,
+    BindSettings,
+    auth_settings,
+    build_asgi_app,
+    build_mcp_app,
+    serve,
+)
+from .mcp.jwks import Jwk, JwksCache, JwkSet
+from .mcp.metadata import (
     protected_resource_metadata,
     protected_resource_metadata_url,
     resource_metadata_challenge,
     scope_challenge,
 )
-from .middleware import (
+from .mcp.middleware import (
     PROTOCOL_REVISION,
     PrincipalResolution,
     ProtocolRevisionGate,
@@ -91,6 +91,7 @@ from .middleware import (
     ScopeEnforcement,
     parse_bearer,
 )
+from .mcp.verifier import JwtTokenVerifier, resolve_for_sdk
 from .orm import (
     CENTRAL_USER_ID,
     STATUS_ACTIVE,
@@ -113,7 +114,6 @@ from .orm import (
     registered_projection,
 )
 from .scopes import NO_SCOPE, ScopePolicy, ScopeSet
-from .verifier import JwtTokenVerifier, resolve_for_sdk
 
 __version__ = "0.1.0.dev1"
 

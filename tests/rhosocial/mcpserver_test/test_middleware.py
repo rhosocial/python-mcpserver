@@ -23,7 +23,7 @@ from rhosocial.mcpserver import (
     ScopeEnforcement,
     parse_bearer,
 )
-from rhosocial.mcpserver.verifier import clear_verified, take_verified
+from rhosocial.mcpserver.mcp.verifier import clear_verified, take_verified
 
 
 class Recorder:
@@ -369,7 +369,7 @@ async def test_the_memo_is_keyed_on_the_exact_credential() -> None:
     another's."""
     from mcp.server.auth.provider import AccessToken
 
-    from rhosocial.mcpserver.verifier import publish_verified
+    from rhosocial.mcpserver.mcp.verifier import publish_verified
 
     record = AccessToken(token="a", client_id="c", scopes=[], subject="u-1")
     token = publish_verified("credential-a", record)

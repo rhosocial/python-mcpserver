@@ -1,4 +1,4 @@
-# src/rhosocial/mcpserver/metadata.py
+# src/rhosocial/mcpserver/mcp/metadata.py
 """RFC 9728 protected resource metadata — the document that starts discovery.
 
 An MCP client that receives a 401 learns nothing from it beyond "ask someone".
@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from .config import PRM_PATH, ResourceServerConfig
+from ..config import PRM_PATH, ResourceServerConfig
 
 __all__ = [
     "protected_resource_metadata",

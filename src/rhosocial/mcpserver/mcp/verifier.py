@@ -1,4 +1,4 @@
-# src/rhosocial/mcpserver/verifier.py
+# src/rhosocial/mcpserver/mcp/verifier.py
 """Verifying a bearer token locally: signature, issuer, audience, expiry.
 
 This is the replacement for the per-request database lookup that
@@ -35,12 +35,12 @@ from typing import Any
 import jwt
 from mcp.server.auth.provider import AccessToken
 
-from .config import ResourceServerConfig
-from .credentials import CredentialSource
-from .errors import Unauthenticated
-from .identity import Principal
+from ..config import ResourceServerConfig
+from ..credentials import CredentialSource
+from ..errors import Unauthenticated
+from ..identity import Principal
+from ..scopes import ScopeSet
 from .jwks import DEFAULT_ALGORITHMS, Jwk, JwksCache
-from .scopes import ScopeSet
 
 __all__ = [
     "JwtTokenVerifier",
@@ -274,7 +274,7 @@ class JwtTokenVerifier:
         would tell an operator to rotate a credential when the real fault is
         that the AS is unreachable.
         """
-        from .errors import JwkUnavailable
+        from ..errors import JwkUnavailable
 
         try:
             return await self._jwks.key_for(kid, algorithm)

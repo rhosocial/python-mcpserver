@@ -1,4 +1,4 @@
-# src/rhosocial/mcpserver/jwks.py
+# src/rhosocial/mcpserver/mcp/jwks.py
 """Caching and rotating the authorization server's signing keys.
 
 The interesting behaviour of a JWKS cache is entirely in its failures, so this
@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 
-from .errors import ConfigurationError, JwkUnavailable
+from ..errors import ConfigurationError, JwkUnavailable
 
 __all__ = ["Jwk", "JwksCache", "JwkSet"]
 

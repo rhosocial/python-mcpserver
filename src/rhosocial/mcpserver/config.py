@@ -54,7 +54,7 @@ class ResourceServerConfig:
     :param algorithms: accepted asymmetric signing algorithms.
     :param leeway_seconds: clock-skew tolerance for ``exp``/``nbf``.
     :param enforce_protocol_revision: refuse requests that do not declare
-        :data:`~rhosocial.mcpserver.middleware.PROTOCOL_REVISION`.
+        :data:`~rhosocial.mcpserver.mcp.middleware.PROTOCOL_REVISION`.
 
         Off by default, and the default is a measured choice rather than a
         shrug.  This library targets 2026-07-28 and every Tier 1 SDK can speak

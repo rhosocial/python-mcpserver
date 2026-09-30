@@ -171,7 +171,7 @@ def set_cli_principal(principal: Principal) -> Token:
     The CLI is authorised by local access: whoever can run the process already
     holds the credentials.  This binds *which* identity that is, and the value
     still came from a real credential — the CLI verifies it through the same
-    :class:`~rhosocial.mcpserver.verifier.JwtTokenVerifier` before calling this.
+    :class:`~rhosocial.mcpserver.mcp.verifier.JwtTokenVerifier` before calling this.
     """
     return _cli_principal.set(principal)
 

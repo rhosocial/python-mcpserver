@@ -10,7 +10,7 @@ import pytest
 from conftest import JWKS_URI, FakeJwks, SigningKey
 
 from rhosocial.mcpserver import JwksCache, JwkUnavailable
-from rhosocial.mcpserver.jwks import Jwk, JwkSet
+from rhosocial.mcpserver.mcp.jwks import Jwk, JwkSet
 
 
 async def test_first_lookup_fetches_once(clock, signing_key: SigningKey) -> None:
@@ -262,14 +262,14 @@ def test_duplicate_kid_is_not_silently_overwritten() -> None:
 
 
 def test_decode_rejects_a_non_json_body() -> None:
-    from rhosocial.mcpserver.jwks import _decode
+    from rhosocial.mcpserver.mcp.jwks import _decode
 
     with pytest.raises(JwkUnavailable, match="not valid JSON"):
         _decode(b"{oops")
 
 
 def test_decode_accepts_a_mapping_directly() -> None:
-    from rhosocial.mcpserver.jwks import _decode
+    from rhosocial.mcpserver.mcp.jwks import _decode
 
     assert _decode({"keys": []}) == {"keys": []}
     assert _decode(json.dumps({"keys": []})) == {"keys": []}

@@ -1,4 +1,4 @@
-# src/rhosocial/mcpserver/middleware.py
+# src/rhosocial/mcpserver/mcp/middleware.py
 """The ASGI layer: per-tool scope enforcement, the metadata document, health.
 
 Everything here exists because the MCP SDK's own authentication cannot do this
@@ -36,8 +36,8 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
-from .credentials import CredentialSource
+from ..config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from ..credentials import CredentialSource
 from .metadata import CACHE_CONTROL, protected_resource_metadata, scope_challenge
 from .verifier import clear_verified, publish_verified, resolve_for_sdk
 
@@ -106,7 +106,7 @@ class ResourceEndpoints:
     have to be answered before authentication: a client that cannot read the
     metadata document cannot know where to authenticate.
 
-    Also the outermost layer in :func:`rhosocial.mcpserver.app.build_asgi_app`,
+    Also the outermost layer in :func:`rhosocial.mcpserver.mcp.app.build_asgi_app`,
     where it must come *first* — it is what turns a bare 404 from the SDK into
     the document that makes the 401 actionable.  Anything it does not claim is
     delegated to the wrapped application, which produces its own 404.
@@ -474,8 +474,8 @@ class PrincipalResolution:
             await self._app(scope, receive, send)
             return
 
-        from .identity import Principal, reset_current_principal, set_current_principal
-        from .orm.principal import ensure_principal_id
+        from ..identity import Principal, reset_current_principal, set_current_principal
+        from ..orm.principal import ensure_principal_id
 
         principal = Principal(
             central_user_id=str(record.subject),

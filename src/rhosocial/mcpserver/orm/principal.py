@@ -141,7 +141,7 @@ def current_principal_id() -> int:
     from ``__init__`` and ``prepare_save_data``, neither of which can await.
     Resolving the projection *is* async — it may have to create a row — so that
     happens once per request in
-    :class:`rhosocial.mcpserver.middleware.PrincipalResolution`, and this
+    :class:`rhosocial.mcpserver.mcp.middleware.PrincipalResolution`, and this
     function only reads the result.
 
     :raises Unauthenticated: no verified identity in this context.
@@ -169,7 +169,7 @@ async def ensure_principal_id(principal: Principal | None = None) -> int:
     """Resolve the projection for *principal* (default: the caller) and memoise it.
 
     The one query per request that both enforcement points depend on.  Called
-    by :class:`rhosocial.mcpserver.middleware.PrincipalResolution`; a service
+    by :class:`rhosocial.mcpserver.mcp.middleware.PrincipalResolution`; a service
     that establishes identity some other way calls it directly.
 
     The memo is only written when the resolved principal **is** the current

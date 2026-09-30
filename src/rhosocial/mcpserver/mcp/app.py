@@ -1,4 +1,4 @@
-# src/rhosocial/mcpserver/app.py
+# src/rhosocial/mcpserver/mcp/app.py
 """Assembling the pieces into an ASGI application.
 
 The order of the four layers is not a style preference — each one exists
@@ -46,9 +46,9 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
-from .credentials import CredentialSource
-from .errors import ConfigurationError
+from ..config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from ..credentials import CredentialSource
+from ..errors import ConfigurationError
 from .middleware import (
     MAX_BODY_BYTES,
     PrincipalResolution,
@@ -102,7 +102,7 @@ def build_asgi_app(
         unauthenticated caller could make the process buffer anything.
     :param resolve_projection: turn off only for a service that uses neither
         ``PrincipalScopedQuery`` nor ``PrincipalOwnedMixin``.  See
-        :class:`~rhosocial.mcpserver.middleware.PrincipalResolution`.
+        :class:`~rhosocial.mcpserver.mcp.middleware.PrincipalResolution`.
     """
     return ResourceEndpoints(
         config,

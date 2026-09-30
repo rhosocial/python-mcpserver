@@ -113,7 +113,7 @@ def test_a_source_may_declare_no_discovery_document() -> None:
 
 
 def test_a_jwt_verifier_is_a_credential_source() -> None:
-    from rhosocial.mcpserver.verifier import JwtTokenVerifier
+    from rhosocial.mcpserver.mcp.verifier import JwtTokenVerifier
 
     verifier = JwtTokenVerifier(
         jwks_cache=None, issuer="https://auth.example.com", resource="https://a/mcp"
@@ -127,7 +127,7 @@ def test_metadata_is_absent_without_a_config() -> None:
     There is no request being served and therefore no client to discover
     anything to; a half-built document would be worse than declining.
     """
-    from rhosocial.mcpserver.verifier import JwtTokenVerifier
+    from rhosocial.mcpserver.mcp.verifier import JwtTokenVerifier
 
     verifier = JwtTokenVerifier(
         jwks_cache=None, issuer="https://auth.example.com", resource="https://a/mcp"
@@ -143,7 +143,7 @@ def test_metadata_names_the_issuer_when_a_config_is_given() -> None:
     lists itself as its own authorization server sends its clients to fetch
     tokens from the wrong host.
     """
-    from rhosocial.mcpserver.verifier import JwtTokenVerifier
+    from rhosocial.mcpserver.mcp.verifier import JwtTokenVerifier
 
     config = ResourceServerConfig(
         resource="https://svc.example.com/mcp",

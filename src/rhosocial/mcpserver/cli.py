@@ -40,8 +40,8 @@ from typing import Any
 
 from .config import ResourceServerConfig
 from .errors import ConfigurationError, McpServerError
-from .jwks import JwksCache
-from .verifier import JwtTokenVerifier
+from .mcp.jwks import JwksCache
+from .mcp.verifier import JwtTokenVerifier
 
 __all__ = ["main", "build_parser"]
 
@@ -260,7 +260,7 @@ def _all(keys: Any) -> list[Any]:
 
 
 def _prm(args: argparse.Namespace) -> int:
-    from .metadata import protected_resource_metadata
+    from .mcp.metadata import protected_resource_metadata
 
     scopes = _split(args.scopes) or ["resource:read"]
     tools = _parse_tools(args.tools or "")
