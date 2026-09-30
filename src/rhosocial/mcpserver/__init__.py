@@ -20,15 +20,14 @@ TTL; a service that needs immediate revocation for a high-risk operation adds
 an introspection check itself.
 
 **The scope vocabulary is declared once.**
-:class:`ResourceServerConfig` holds it, the per-tool check reads it, and the
+:class:`ServiceConfig` holds it, the per-tool check reads it, and the
 RFC 9728 document is generated from it — so what the service advertises and
 what it accepts cannot drift apart.
 
 Typical wiring::
 
-    config = ResourceServerConfig(
+    config = ServiceConfig(
         resource="https://calendar.example.com/mcp",
-        issuer="https://auth.example.com",
         scopes=["schedules:read", "schedules:write"],
         tool_scopes={
             "whoami": NO_SCOPE,
@@ -36,10 +35,11 @@ Typical wiring::
             "create_schedule": "schedules:write",
         },
     )
-    cache = JwksCache(config.jwks_uri)
+    oauth = OAuthConfig(issuer="https://auth.example.com")
+    cache = JwksCache(oauth.jwks_uri)
     verifier = JwtTokenVerifier(
         cache,
-        issuer=config.issuer,
+        issuer=oauth.issuer,
         resource=config.resource,
         scope_set=config.policy.vocabulary,
     )
@@ -48,8 +48,8 @@ Typical wiring::
 
 from __future__ import annotations
 
-from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
-from .credentials import CredentialSource
+from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, OAuthConfig, ServiceConfig, from_env
+from .credentials import CredentialSource, DiscoverySource
 from .errors import (
     ConfigurationError,
     JwkUnavailable,
@@ -119,7 +119,9 @@ __version__ = "0.1.0.dev1"
 
 __all__ = [
     # configuration
-    "ResourceServerConfig",
+    "ServiceConfig",
+    "OAuthConfig",
+    "from_env",
     "MCP_PATH",
     "PRM_PATH",
     "HEALTH_PATH",
@@ -143,6 +145,7 @@ __all__ = [
     "Principal",
     "SELF_ISSUED",
     "CredentialSource",
+    "DiscoverySource",
     "current_principal",
     "current_principal_id",
     "ensure_principal_id",

@@ -210,11 +210,10 @@ def cache(fake_jwks: FakeJwks, clock: Callable[[], float]) -> Any:
 
 @pytest.fixture
 def config() -> Any:
-    from rhosocial.mcpserver import NO_SCOPE, ResourceServerConfig
+    from rhosocial.mcpserver import NO_SCOPE, ServiceConfig
 
-    return ResourceServerConfig(
+    return ServiceConfig(
         resource=RESOURCE,
-        issuer=ISSUER,
         scopes=["schedules:read", "schedules:write"],
         tool_scopes={
             "whoami": NO_SCOPE,
@@ -222,6 +221,13 @@ def config() -> Any:
             "create_schedule": "schedules:write",
         },
     )
+
+
+@pytest.fixture
+def oauth() -> Any:
+    from rhosocial.mcpserver import OAuthConfig
+
+    return OAuthConfig(issuer=ISSUER)
 
 
 @pytest.fixture

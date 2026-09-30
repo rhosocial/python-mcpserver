@@ -38,7 +38,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from .config import ResourceServerConfig
+from .config import OAuthConfig, ServiceConfig
 from .errors import ConfigurationError, McpServerError
 from .mcp.jwks import JwksCache
 from .mcp.verifier import JwtTokenVerifier
@@ -134,9 +134,13 @@ def _decode(args: argparse.Namespace) -> int:
         return _decode_unverified(args)
 
     config = _service_config(args)
+    oauth = OAuthConfig(
+        issuer=_require(args.issuer, "--issuer or $MCP_ISSUER"),
+        jwks_uri=args.jwks_uri,
+    )
     verifier = JwtTokenVerifier(
-        JwksCache(config.jwks_uri),
-        issuer=config.issuer,
+        JwksCache(oauth.jwks_uri),
+        issuer=oauth.issuer,
         resource=config.resource,
     )
     token = _read_token(args)
@@ -233,13 +237,16 @@ def _read_token(args: argparse.Namespace) -> str | None:
 
 
 async def _jwks(args: argparse.Namespace) -> int:
-    config = _service_config(args)
-    cache = JwksCache(config.jwks_uri)
+    oauth = OAuthConfig(
+        issuer=_require(args.issuer, "--issuer or $MCP_ISSUER"),
+        jwks_uri=args.jwks_uri,
+    )
+    cache = JwksCache(oauth.jwks_uri)
     keys = await cache.prefetch()
     print(
         json.dumps(
             {
-                "jwks_uri": config.jwks_uri,
+                "jwks_uri": oauth.jwks_uri,
                 "key_count": len(keys),
                 "keys": [
                     {"kid": k.kid, "kty": k.kty, "alg": k.alg, "use": k.use} for k in _all(keys)
@@ -264,14 +271,16 @@ def _prm(args: argparse.Namespace) -> int:
 
     scopes = _split(args.scopes) or ["resource:read"]
     tools = _parse_tools(args.tools or "")
-    config = ResourceServerConfig(
+    service = ServiceConfig(
         resource=_require(args.resource, "--resource or $MCP_RESOURCE"),
-        issuer=_require(args.issuer, "--issuer or $MCP_ISSUER"),
         scopes=scopes,
         tool_scopes=tools,
+    )
+    oauth = OAuthConfig(
+        issuer=_require(args.issuer, "--issuer or $MCP_ISSUER"),
         jwks_uri=args.jwks_uri,
     )
-    print(json.dumps(protected_resource_metadata(config), indent=2))
+    print(json.dumps(protected_resource_metadata(service, _Advertise(oauth)), indent=2))
     return EXIT_OK
 
 
@@ -357,19 +366,35 @@ def _split(raw: str | None) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _service_config(args: argparse.Namespace) -> ResourceServerConfig:
-    """A minimal config for the read-only subcommands.
+class _Advertise:
+    """The OAuth half of a discovery document, for a command with no verifier.
+
+    ``prm`` prints the document a client would fetch, so it needs the issuer and
+    nothing else.  Not a :class:`CredentialSource`: this has no ``verify`` and
+    must never be mistaken for something that can check a token.
+    """
+
+    def __init__(self, config: OAuthConfig) -> None:
+        self._config = config
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "authorization_servers": [self._config.issuer],
+            "jwks_uri": self._config.jwks_uri,
+        }
+
+
+def _service_config(args: argparse.Namespace) -> ServiceConfig:
+    """A minimal service config for the read-only subcommands.
 
     ``decode`` and ``jwks`` do not enforce scopes and do not touch a database,
     so a one-scope placeholder vocabulary is enough and the command does not have
     to be told about a service's tools.
     """
-    return ResourceServerConfig(
+    return ServiceConfig(
         resource=_require(args.resource, "--resource or $MCP_RESOURCE"),
-        issuer=_require(args.issuer, "--issuer or $MCP_ISSUER"),
         scopes=["probe:read"],
         tool_scopes={"probe": "probe:read"},
-        jwks_uri=args.jwks_uri,
     )
 
 

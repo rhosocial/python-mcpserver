@@ -17,7 +17,7 @@ from rhosocial.mcpserver import (
     SELF_ISSUED,
     CredentialSource,
     Principal,
-    ResourceServerConfig,
+    ServiceConfig,
     resolve_for_sdk,
 )
 from rhosocial.mcpserver.config import ScopePolicy
@@ -121,21 +121,26 @@ def test_a_jwt_verifier_is_a_credential_source() -> None:
     assert isinstance(verifier, CredentialSource)
 
 
-def test_metadata_is_absent_without_a_config() -> None:
-    """The CLI builds a verifier with no server to describe.
+def test_a_jwt_verifier_advertises_only_its_own_half() -> None:
+    """The OAuth half comes from the source; the rest is the service's.
 
-    There is no request being served and therefore no client to discover
-    anything to; a half-built document would be worse than declining.
+    ``resource`` and ``scopes_supported`` are deliberately absent here. They are
+    the service's own facts, and a document that took them from the credential
+    source would be one that could publish a scope vocabulary nobody enforces.
     """
     from rhosocial.mcpserver.mcp.verifier import JwtTokenVerifier
 
     verifier = JwtTokenVerifier(
         jwks_cache=None, issuer="https://auth.example.com", resource="https://a/mcp"
     )
-    assert verifier.metadata() is None
+
+    advertised = verifier.metadata()
+    assert advertised["authorization_servers"] == ["https://auth.example.com"]
+    assert "resource" not in advertised
+    assert "scopes_supported" not in advertised
 
 
-def test_metadata_names_the_issuer_when_a_config_is_given() -> None:
+def test_the_composed_document_names_the_issuer() -> None:
     """And this is the one field a client cannot do without.
 
     ``authorization_servers`` is what makes the ``aud`` binding work end to
@@ -143,25 +148,46 @@ def test_metadata_names_the_issuer_when_a_config_is_given() -> None:
     lists itself as its own authorization server sends its clients to fetch
     tokens from the wrong host.
     """
+    from rhosocial.mcpserver.mcp.metadata import protected_resource_metadata
     from rhosocial.mcpserver.mcp.verifier import JwtTokenVerifier
 
-    config = ResourceServerConfig(
+    service = ServiceConfig(
         resource="https://svc.example.com/mcp",
-        issuer="https://auth.example.com",
         scopes=ScopeSet(["a:read"]),
         tool_scopes={"read": "a:read"},
     )
     verifier = JwtTokenVerifier(
-        jwks_cache=None,
-        issuer=config.issuer,
-        resource=config.resource,
-        config=config,
+        jwks_cache=None, issuer="https://auth.example.com", resource=service.resource
     )
 
-    document = verifier.metadata()
+    document = protected_resource_metadata(service, verifier)
     assert document is not None
     assert document["authorization_servers"] == ["https://auth.example.com"]
     assert document["resource"] == "https://svc.example.com/mcp"
+    assert document["scopes_supported"] == ["a:read"]
+
+
+def test_a_service_with_its_own_tokens_publishes_nothing() -> None:
+    """The gap this split exists to close.
+
+    Before it, ``protected_resource_metadata`` took one config and always
+    returned a document -- so a service checking tokens from its own table
+    answered the well-known path with an ``authorization_servers`` entry
+    pointing at an issuer that does not exist, sending a client off to
+    authenticate against nothing.  ``None`` makes that a 404, which is a fact a
+    client can act on.
+    """
+    from rhosocial.mcpserver.mcp.metadata import protected_resource_metadata
+
+    service = ServiceConfig(
+        resource="https://svc.example.com/mcp",
+        scopes=ScopeSet(["a:read"]),
+        tool_scopes={"read": "a:read"},
+    )
+
+    assert protected_resource_metadata(service) is None
+    assert protected_resource_metadata(service, _TableSource({})) is None
+    assert protected_resource_metadata(service, _TableSource({"t": "alice"})) is None
 
 
 def test_self_issued_is_not_an_empty_client_id() -> None:
@@ -184,3 +210,47 @@ def test_scope_policy_stays_out_of_the_protocol() -> None:
     policy = ScopePolicy(vocabulary=ScopeSet(["a:read"]), tool_scopes={"read": "a:read"})
     assert policy.missing("read", frozenset()) == "a:read"
     assert policy.missing("read", frozenset({"a:read"})) is None
+
+
+@pytest.mark.anyio
+async def test_a_service_with_its_own_tokens_serves_no_discovery_document() -> None:
+    """The 404, proven through the endpoint rather than the builder.
+
+    ``protected_resource_metadata`` returning ``None`` is only half a claim. What
+    matters is that a client gets a 404: a document missing its required
+    ``authorization_servers`` would be worse than nothing, because a client
+    would treat it as an authorization server being temporarily unavailable and
+    retry, instead of concluding there is nothing to discover.
+    """
+    from rhosocial.mcpserver import PRM_PATH, ServiceConfig
+    from rhosocial.mcpserver.mcp.middleware import ResourceEndpoints
+
+    status: list[int] = []
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.start":
+            status.append(message["status"])
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    app = ResourceEndpoints(
+        ServiceConfig(
+            resource="https://svc.example.com/mcp",
+            scopes=ScopeSet(["a:read"]),
+            tool_scopes={"read": "a:read"},
+        ),
+        source=_TableSource({"tok": "alice"}),
+    )
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": PRM_PATH,
+            "headers": [(b"host", b"svc.example.com")],
+        },
+        receive,
+        send,
+    )
+
+    assert status == [404]

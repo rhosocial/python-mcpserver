@@ -31,7 +31,7 @@ from typing import Any
 import httpx2
 import pytest
 from asgi_lifespan import LifespanManager
-from conftest import ISSUER, RESOURCE, FakeJwks
+from conftest import ISSUER, JWKS_URI, RESOURCE, FakeJwks
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
@@ -42,7 +42,7 @@ from rhosocial.mcpserver import (
     PROTOCOL_REVISION,
     JwksCache,
     JwtTokenVerifier,
-    ResourceServerConfig,
+    ServiceConfig,
     auth_settings,
     build_mcp_app,
     current_principal,
@@ -56,10 +56,9 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def make_config() -> ResourceServerConfig:
-    return ResourceServerConfig(
+def make_config() -> ServiceConfig:
+    return ServiceConfig(
         resource=RESOURCE,
-        issuer=ISSUER,
         scopes=["notes:read", "notes:write"],
         tool_scopes={
             "whoami": NO_SCOPE,
@@ -75,10 +74,10 @@ def app(fake_jwks: FakeJwks, clock) -> Any:
     from contextlib import asynccontextmanager
 
     config = make_config()
-    cache = JwksCache(config.jwks_uri, fetch=fake_jwks.fetch, clock=clock)
+    cache = JwksCache(JWKS_URI, fetch=fake_jwks.fetch, clock=clock)
     verifier = JwtTokenVerifier(
         cache,
-        issuer=config.issuer,
+        issuer=ISSUER,
         resource=config.resource,
         scope_set=config.policy.vocabulary,
     )
@@ -87,7 +86,7 @@ def app(fake_jwks: FakeJwks, clock) -> Any:
     server = MCPServer(
         name="notes",
         version="0.1.0",
-        auth=auth_settings(config),
+        auth=auth_settings(ISSUER, config.resource),
         token_verifier=verifier,
     )
 
@@ -363,12 +362,12 @@ async def test_the_default_path_requires_a_registered_projection(
     """
     config = make_config()
     verifier = JwtTokenVerifier(
-        JwksCache(config.jwks_uri, fetch=fake_jwks.fetch, clock=clock),
-        issuer=config.issuer,
+        JwksCache(JWKS_URI, fetch=fake_jwks.fetch, clock=clock),
+        issuer=ISSUER,
         resource=config.resource,
     )
     server = MCPServer(
-        name="notes", auth=auth_settings(config), token_verifier=verifier
+        name="notes", auth=auth_settings(ISSUER, config.resource), token_verifier=verifier
     )
 
     @server.tool(description="List notes.")
@@ -400,8 +399,8 @@ def test_build_mcp_app_refuses_an_unauthenticated_server(fake_jwks, clock) -> No
 
     config = make_config()
     verifier = JwtTokenVerifier(
-        JwksCache(config.jwks_uri, fetch=fake_jwks.fetch, clock=clock),
-        issuer=config.issuer,
+        JwksCache(JWKS_URI, fetch=fake_jwks.fetch, clock=clock),
+        issuer=ISSUER,
         resource=config.resource,
     )
 
@@ -546,13 +545,11 @@ async def test_a_mismatched_routing_header_is_the_sdks_refusal_not_ours(app, sig
 
 # -- the revision gate, when a service opts in ---------------------------
 
-def _strict_config() -> ResourceServerConfig:
-    return ResourceServerConfig(
+def _strict_config() -> ServiceConfig:
+    return ServiceConfig(
         resource=RESOURCE,
-        issuer=ISSUER,
         scopes=["notes:read"],
         tool_scopes={"whoami": NO_SCOPE},
-        enforce_protocol_revision=True,
     )
 
 
@@ -560,12 +557,15 @@ def _strict_config() -> ResourceServerConfig:
 def strict_app(fake_jwks: FakeJwks, clock) -> Any:
     """A service that refuses anything but 2026-07-28."""
     config = _strict_config()
-    cache = JwksCache(config.jwks_uri, fetch=fake_jwks.fetch, clock=clock)
+    cache = JwksCache(JWKS_URI, fetch=fake_jwks.fetch, clock=clock)
     verifier = JwtTokenVerifier(
-        cache, issuer=config.issuer, resource=config.resource, scope_set=config.policy.vocabulary
+        cache, issuer=ISSUER, resource=config.resource, scope_set=config.policy.vocabulary
     )
     server = MCPServer(
-        name="notes", version="0.1.0", auth=auth_settings(config), token_verifier=verifier
+        name="notes",
+        version="0.1.0",
+        auth=auth_settings(ISSUER, config.resource),
+        token_verifier=verifier,
     )
 
     @server.tool(description="Say who is calling.")
@@ -576,6 +576,7 @@ def strict_app(fake_jwks: FakeJwks, clock) -> Any:
         server,
         config=config,
         verifier=verifier,
+        enforce_protocol_revision=True,
         json_response=True,
         resolve_projection=False,
         transport_security=TransportSecuritySettings(
@@ -627,7 +628,7 @@ async def test_the_gate_off_is_what_keeps_legacy_clients_working(app, signing_ke
     See anthropics/claude-code#96183: Claude Code 2.1.280 sends a legacy
     ``initialize`` even after a modern-only server answers ``server/discover``.
     """
-    assert make_config().enforce_protocol_revision is False
+    assert not hasattr(make_config(), "enforce_protocol_revision")
 
     token = signing_key.sign(scope="notes:read")
     body = rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
@@ -665,8 +666,8 @@ async def test_the_gate_off_is_what_keeps_legacy_clients_working(app, signing_ke
 def test_the_metadata_url_is_built_per_rfc9728(resource: str, expected: str) -> None:
     from rhosocial.mcpserver import protected_resource_metadata_url
 
-    config = ResourceServerConfig(
-        resource=resource, issuer=ISSUER, scopes=["notes:read"], tool_scopes={"t": "notes:read"}
+    config = ServiceConfig(
+        resource=resource, scopes=["notes:read"], tool_scopes={"t": "notes:read"}
     )
     assert protected_resource_metadata_url(config) == expected
 

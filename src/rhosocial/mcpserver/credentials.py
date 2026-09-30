@@ -12,7 +12,7 @@ isolation regardless of which transport carries the request.
 caller do this" and belongs to neither side; putting it here would couple *what
 a tool requires* to *how the credential was obtained*, and the two change for
 different reasons.  The 401 challenge, because in the MCP path it is built from
-:attr:`ResourceServerConfig.issuer` and ``.resource`` — the protocol would force
+the configuration's issuer and resource — the protocol would force
 every implementation to fabricate a URL it does not have.  Where the credential
 comes from is a question; where a 401 tells the client to go is a question about
 the server's own shape, and it was already answered without a verifier.
@@ -28,11 +28,37 @@ from typing import Any, Protocol, runtime_checkable
 
 from .identity import Principal
 
-__all__ = ["CredentialSource"]
+__all__ = ["CredentialSource", "DiscoverySource"]
 
 
 @runtime_checkable
-class CredentialSource(Protocol):
+class DiscoverySource(Protocol):
+    """Something that can describe where to authenticate.
+
+    The half of :class:`CredentialSource` that the discovery document needs, and
+    separately declared because something can have one without the other: the
+    ``prm`` CLI command prints the document a client would fetch, so it needs an
+    issuer to advertise, and it verifies nothing.
+    """
+
+    def metadata(self) -> dict[str, Any] | None:
+        """The RFC 9728 document, or ``None`` when there is nothing to discover.
+
+        ``None`` means *there is nowhere else to go*: a service that issues and
+        checks its own tokens has no external authorization server for a client
+        to discover, and returning an empty document would have a client looking
+        for one that does not exist.
+
+        RFC 9728 shape for the OAuth case, including the ``authorization_servers``
+        entry that points at the issuer.  It is deliberately *not* this service's
+        own URL: a resource server that lists itself as its own authorization
+        server sends its clients to fetch tokens from the wrong host.
+        """
+        ...
+
+
+@runtime_checkable
+class CredentialSource(DiscoverySource, Protocol):
     """Something that can turn a presented string into an identity.
 
     Structural, not inherited: a service's token table and a JWKS verify have
@@ -62,20 +88,3 @@ class CredentialSource(Protocol):
         rather than a 500 has to be able to tell those apart, which it cannot if
         everything arrives as an exception.
         """
-        ...
-
-    def metadata(self) -> dict[str, Any] | None:
-        """A discovery document describing where to authenticate, if there is one.
-
-        ``None`` means *there is nowhere else to go*: a service that issues and
-        checks its own tokens has no external authorization server for a client
-        to discover, and returning an empty document would have a client looking
-        for one that does not exist.
-
-        RFC 9728 shape for the OAuth case, including the
-        ``authorization_servers`` entry that points at the issuer.  It is
-        deliberately *not* this service's own URL: a resource server that lists
-        itself as its own authorization server sends its clients to fetch tokens
-        from the wrong host.
-        """
-        ...

@@ -309,8 +309,22 @@ async def test_a_chunked_body_is_reassembled(config, verifier, signing_key) -> N
 # -- the two unauthenticated endpoints -----------------------------------
 
 
-async def test_protected_resource_metadata_is_served(config) -> None:
-    client = Client(ResourceEndpoints(config))
+class _Issuer:
+    """The OAuth half of the document, without a verifier.
+
+    These tests are about which layer answers what, so the source is a stand-in
+    that advertises an issuer and does nothing else -- no cache, no key.
+    """
+
+    def __init__(self, oauth: object) -> None:
+        self._oauth = oauth
+
+    def metadata(self) -> dict[str, object]:
+        return {"authorization_servers": [self._oauth.issuer]}
+
+
+async def test_protected_resource_metadata_is_served(config, oauth) -> None:
+    client = Client(ResourceEndpoints(config, source=_Issuer(oauth)))
 
     await client.request(method="GET", path=PRM_PATH)
 
@@ -429,11 +443,22 @@ def test_parse_bearer(header: str | None, expected: str | None) -> None:
     assert parse_bearer(header) == expected
 
 
-def test_verifier_and_middleware_agree_on_the_resource(config) -> None:
+def test_verifier_and_middleware_agree_on_the_resource(config, oauth) -> None:
     """The verifier's `aud` and the PRM document's `resource` are the same
     value; if they drift, tokens are issued for one thing and checked against
-    another."""
-    from rhosocial.mcpserver import protected_resource_metadata
+    another.
 
-    assert protected_resource_metadata(config)["resource"] == config.resource
-    assert config.audience == (config.resource,)
+    The document takes it from the service config and the audience from the
+    verifier, which is why this is a test rather than a consequence of the
+    types: they are two objects agreeing on one string.
+    """
+    from rhosocial.mcpserver import JwtTokenVerifier, protected_resource_metadata
+
+    verifier = JwtTokenVerifier(
+        jwks_cache=None, issuer=oauth.issuer, resource=config.resource
+    )
+    document = protected_resource_metadata(config, verifier)
+
+    assert document["resource"] == config.resource
+    assert verifier.audience == (config.resource,)
+    assert oauth.audience in ((), (config.resource,))

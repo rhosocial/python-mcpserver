@@ -145,7 +145,7 @@ class ScopePolicy:
         Mutating rather than immutable, because services register their tools
         as they build the server and a frozen map would mean declaring every
         tool before any of them exist.  The cost is that the advertised
-        ``scopes_supported`` can go stale; :meth:`ResourceServerConfig.validate`
+        ``scopes_supported`` can go stale; :meth:`ServiceConfig.validate`
         exists to recompute it once registration is finished, and the
         enforcement middleware is the thing that has to be called.
         """

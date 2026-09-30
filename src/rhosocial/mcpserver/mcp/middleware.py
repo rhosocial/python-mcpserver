@@ -36,7 +36,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from ..config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from ..config import HEALTH_PATH, MCP_PATH, PRM_PATH, ServiceConfig
 from ..credentials import CredentialSource
 from .metadata import CACHE_CONTROL, protected_resource_metadata, scope_challenge
 from .verifier import clear_verified, publish_verified, resolve_for_sdk
@@ -112,17 +112,22 @@ class ResourceEndpoints:
     delegated to the wrapped application, which produces its own 404.
     """
 
-    __slots__ = ("_config", "_health", "_app")
+    __slots__ = ("_config", "_health", "_app", "_source")
 
     def __init__(
         self,
-        config: ResourceServerConfig,
+        config: ServiceConfig,
         health: Callable[[], Awaitable[bool]] | None = None,
         app: Any = None,
+        source: CredentialSource | None = None,
     ) -> None:
         self._config = config
         self._health = health
         self._app = app
+        # The document needs to know where to authenticate, and only the
+        # credential source knows that. Held here rather than in the inner
+        # layers because this is the layer that serves it.
+        self._source = source
 
     async def __call__(self, scope: Any, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
@@ -132,10 +137,19 @@ class ResourceEndpoints:
         path = scope.get("path", "")
 
         if method == "GET" and path.startswith(PRM_PATH):
+            document = protected_resource_metadata(self._config, self._source)
+            if document is None:
+                # No credential source with anywhere to authenticate, so there
+                # is no RFC 9728 document to publish.  A 404 is the answer; a
+                # document missing its required `authorization_servers` would
+                # send a client looking for an authorization server that does
+                # not exist.
+                await _send_json(send, 404, {"error": "not_found"})
+                return
             await _send_json(
                 send,
                 200,
-                protected_resource_metadata(self._config),
+                document,
                 extra_headers=[(b"cache-control", CACHE_CONTROL.encode())],
             )
             return
@@ -189,7 +203,7 @@ class ScopeEnforcement:
         self,
         app: Any,
         *,
-        config: ResourceServerConfig,
+        config: ServiceConfig,
         verifier: CredentialSource,
         mcp_path: str = MCP_PATH,
         max_body_bytes: int = MAX_BODY_BYTES,

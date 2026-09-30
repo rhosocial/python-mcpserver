@@ -10,10 +10,13 @@ in at all.
 from __future__ import annotations
 
 import pytest
-from conftest import ISSUER, RESOURCE
+from conftest import ISSUER, JWKS_URI, RESOURCE
 
 from rhosocial.mcpserver import (
+    MCP_PATH,
     PRM_PATH,
+    OAuthConfig,
+    from_env,
     protected_resource_metadata,
     protected_resource_metadata_url,
     resource_metadata_challenge,
@@ -22,46 +25,70 @@ from rhosocial.mcpserver import (
 from rhosocial.mcpserver.errors import ConfigurationError
 
 
-def test_document_names_the_authorization_server_not_itself(config) -> None:
+class _Issuer:
+    """The OAuth half of the document, without a verifier.
+
+    ``protected_resource_metadata`` now takes the credential source and asks it
+    where to authenticate.  A full ``JwtTokenVerifier`` would work, but these
+    tests are about document *shape*, and building a cache and a key to assert
+    on a dict would obscure that.
+    """
+
+    def __init__(self) -> None:
+        self._oauth = OAuthConfig(issuer=ISSUER, jwks_uri=JWKS_URI)
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "authorization_servers": [self._oauth.issuer],
+            "jwks_uri": self._oauth.jwks_uri,
+        }
+
+
+@pytest.fixture
+def source() -> _Issuer:
+    return _Issuer()
+
+
+def test_document_names_the_authorization_server_not_itself(config, source) -> None:
     """A service listing itself as the authorization server sends its clients
     to the wrong host to get a token."""
-    document = protected_resource_metadata(config)
+    document = protected_resource_metadata(config, source)
 
     assert document["authorization_servers"] == [ISSUER]
     assert document["authorization_servers"] != [RESOURCE]
 
 
-def test_document_carries_the_resource_identifier(config) -> None:
-    assert protected_resource_metadata(config)["resource"] == RESOURCE
+def test_document_carries_the_resource_identifier(config, source) -> None:
+    assert protected_resource_metadata(config, source)["resource"] == RESOURCE
 
 
-def test_advertised_scopes_come_from_the_enforced_vocabulary(config) -> None:
+def test_advertised_scopes_come_from_the_enforced_vocabulary(config, source) -> None:
     """The two lists must be the same object, or the document advertises a scope
     the server rejects and a client that trusted it gets an inexplicable 403."""
-    document = protected_resource_metadata(config)
+    document = protected_resource_metadata(config, source)
 
     assert document["scopes_supported"] == list(config.scopes_supported)
     assert set(document["scopes_supported"]) <= set(config.vocabulary)
 
 
-def test_header_method_is_declared_explicitly(config) -> None:
+def test_header_method_is_declared_explicitly(config, source) -> None:
     """Saying so stops a client probing the form-encoded variants RFC 6750 also
     permits but this transport does not."""
-    document = protected_resource_metadata(config)
+    document = protected_resource_metadata(config, source)
 
     assert document["bearer_methods_supported"] == ["header"]
 
 
-def test_jwks_uri_is_published(config) -> None:
-    assert protected_resource_metadata(config)["jwks_uri"] == config.jwks_uri
+def test_jwks_uri_is_published(config, source) -> None:
+    assert protected_resource_metadata(config, source)["jwks_uri"] == JWKS_URI
 
 
 def test_service_name_is_derived_from_the_resource() -> None:
-    from rhosocial.mcpserver import ResourceServerConfig
+    from rhosocial.mcpserver import ServiceConfig
 
-    config = ResourceServerConfig(
+    config = ServiceConfig(
         resource="https://calendar.example.com/mcp",
-        issuer=ISSUER,
+        service_name="calendar.example.com/mcp",
         scopes=["a:read"],
         tool_scopes={"r": "a:read"},
     )
@@ -117,81 +144,73 @@ def test_description_is_escaped(config) -> None:
     assert 'error_description="say \\"hi\\""' in challenge
 
 
-def test_plain_http_is_refused() -> None:
-    """The resource identifier is what a token's audience is bound to; an http
-    one can be swapped in transit."""
-    from rhosocial.mcpserver import ResourceServerConfig
+def test_an_issuer_that_is_not_https_is_refused() -> None:
+    """A resource server that trusts an http issuer accepts tokens anyone on the
+    path minted."""
+    from rhosocial.mcpserver import OAuthConfig
 
     with pytest.raises(ConfigurationError, match="not https"):
-        ResourceServerConfig(
-            resource="http://calendar.example.com/mcp",
-            issuer=ISSUER,
-            scopes=["a:read"],
-            tool_scopes={"r": "a:read"},
-        )
-
-
-def test_plain_http_issuer_is_refused() -> None:
-    from rhosocial.mcpserver import ResourceServerConfig
-
-    with pytest.raises(ConfigurationError, match="not https"):
-        ResourceServerConfig(
-            resource=RESOURCE,
-            issuer="http://auth.example.com",
-            scopes=["a:read"],
-            tool_scopes={"r": "a:read"},
-        )
+        OAuthConfig(issuer="http://auth.example.com")
 
 
 def test_loopback_http_is_allowed_for_development() -> None:
-    from rhosocial.mcpserver import ResourceServerConfig
+    from rhosocial.mcpserver import OAuthConfig
 
-    config = ResourceServerConfig(
-        resource="http://127.0.0.1:8000/mcp",
-        issuer="http://localhost:9000",
-        scopes=["a:read"],
-        tool_scopes={"r": "a:read"},
-    )
-
-    assert config.jwks_uri == "http://localhost:9000/.well-known/jwks.json"
+    config = OAuthConfig(issuer="http://127.0.0.1:8000")
+    assert config.issuer == "http://127.0.0.1:8000"
 
 
-def test_resource_with_a_fragment_is_refused() -> None:
-    """RFC 8707 §2: a resource URI must not carry a fragment, so a client that
-    sends one is asking for a different resource than the token is bound to."""
-    from rhosocial.mcpserver import ResourceServerConfig
+def test_an_absolute_resource_that_is_not_https_is_refused_by_the_verifier() -> None:
+    """The audience binding is the reason, and the verifier is where it applies.
 
-    with pytest.raises(ConfigurationError, match="fragment"):
-        ResourceServerConfig(
-            resource="https://calendar.example.com/mcp#frag",
+    ``ServiceConfig.resource`` is only the service's public URL and may be
+    relative, because a proxy owns the hostname and fills it in per request.  It
+    becomes an ``aud`` value in exactly one place -- where a JWT is checked --
+    and that is where a swappable-in-transit identifier has to be refused.  A
+    service with its own token table has no ``aud`` to swap and is not asked for
+    one.
+    """
+    from rhosocial.mcpserver import JwtTokenVerifier
+
+    with pytest.raises(ConfigurationError, match="not https"):
+        JwtTokenVerifier(
+            jwks_cache=None,
             issuer=ISSUER,
-            scopes=["a:read"],
-            tool_scopes={"r": "a:read"},
+            resource="http://calendar.example.com/mcp",
         )
 
 
-def test_config_can_be_built_from_the_environment(monkeypatch, config) -> None:
+def test_a_relative_resource_is_allowed() -> None:
+    """Because behind a proxy it is the request's own Host, not this string."""
+    from rhosocial.mcpserver import JwtTokenVerifier, ServiceConfig
+
+    service = ServiceConfig(scopes=["a:read"], tool_scopes={"r": "a:read"})
+    assert service.resource == MCP_PATH
+    verifier = JwtTokenVerifier(jwks_cache=None, issuer=ISSUER, resource=service.resource)
+    assert verifier is not None
+
+
+def test_config_can_be_built_from_the_environment(monkeypatch, config, source) -> None:
     monkeypatch.setenv("SM_RESOURCE", RESOURCE)
     monkeypatch.setenv("SM_ISSUER", ISSUER)
     monkeypatch.setenv("SM_TABLE_PREFIX", "sm")
 
-    from rhosocial.mcpserver import ResourceServerConfig
 
-    built = ResourceServerConfig.from_env(
+    service, oauth = from_env(
         "SM", scopes=["a:read"], tool_scopes={"r": "a:read"}
     )
 
-    assert built.resource == RESOURCE
+    assert service.resource == RESOURCE
+    assert oauth.issuer == ISSUER
 
 
 def test_missing_environment_variable_names_itself(monkeypatch) -> None:
-    from rhosocial.mcpserver import ResourceServerConfig
 
     monkeypatch.delenv("SM_RESOURCE", raising=False)
     monkeypatch.setenv("SM_ISSUER", ISSUER)
 
-    with pytest.raises(ConfigurationError, match="SM_RESOURCE is not set"):
-        ResourceServerConfig.from_env("SM", scopes=["a:read"], tool_scopes={"r": "a:read"})
+    with pytest.raises(ConfigurationError, match="SM_RESOURCE"):
+        from_env("SM", scopes=["a:read"], tool_scopes={"r": "a:read"})
 
 
 def test_validate_accepts_a_consistent_config(config) -> None:

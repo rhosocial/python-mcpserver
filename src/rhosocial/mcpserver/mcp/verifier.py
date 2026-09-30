@@ -35,9 +35,8 @@ from typing import Any
 import jwt
 from mcp.server.auth.provider import AccessToken
 
-from ..config import ResourceServerConfig
 from ..credentials import CredentialSource
-from ..errors import Unauthenticated
+from ..errors import ConfigurationError, Unauthenticated
 from ..identity import Principal
 from ..scopes import ScopeSet
 from .jwks import DEFAULT_ALGORITHMS, Jwk, JwksCache
@@ -104,12 +103,23 @@ class JwtTokenVerifier:
         algorithms: Sequence[str] = DEFAULT_ALGORITHMS,
         leeway_seconds: int = DEFAULT_LEEWAY_SECONDS,
         require_subject: bool = True,
-        config: ResourceServerConfig | None = None,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
         if not resource:
             raise ValueError("resource is required")
+        if resource.startswith("http://") and not any(
+            host in resource for host in ("localhost", "127.0.0.1", "[::1]")
+        ):
+            # The resource identifier is what a token's `aud` is bound to, so an
+            # http one can be swapped in transit.  Checked here rather than on
+            # ServiceConfig.resource because that string may be relative -- a
+            # proxy owns the hostname and fills it in per request -- and it only
+            # becomes an audience value here, where a JWT is checked.
+            raise ConfigurationError(
+                f"resource {resource!r} is not https; use http only for "
+                "localhost/127.0.0.1"
+            )
         if not algorithms:
             raise ValueError("at least one algorithm must be allowed")
         for algorithm in algorithms:
@@ -127,7 +137,6 @@ class JwtTokenVerifier:
         self._algorithms = tuple(algorithms)
         self._leeway = int(leeway_seconds)
         self._require_subject = require_subject
-        self._config = config
 
     @property
     def issuer(self) -> str:
@@ -141,27 +150,41 @@ class JwtTokenVerifier:
     def algorithms(self) -> tuple[str, ...]:
         return self._algorithms
 
+    @property
+    def audience(self) -> tuple[str, ...]:
+        """The ``aud`` values this verifier will accept.
+
+        Exposed so a service can check the PRM document and the token check
+        agree without reaching into a private field -- they are derived from the
+        same string by two different objects, and only a test can say they have
+        not drifted.
+        """
+        return self._audience
+
     # -- the CredentialSource interface ----------------------------------
 
-    def metadata(self) -> dict[str, Any] | None:
-        """The RFC 9728 document, naming the issuer this verifier trusts.
+    def metadata(self) -> dict[str, Any]:
+        """The OAuth half of the discovery document.
 
-        Returned by the verifier rather than built by the caller because the
-        thing a client must discover is *the authorization server behind these
-        tokens*, and only this object knows which one that is.  A caller
-        assembling the document itself would work right up until the service
-        trusted a second issuer.
+        Returned by the verifier rather than by the caller because the thing a
+        client must discover is *the authorization server behind these tokens*,
+        and this is the only object that knows which one that is.  A caller
+        assembling it from its own configuration would work right up until the
+        service trusted a second issuer.
 
-        ``None`` when the verifier was built without a config, which is the CLI
-        path: there is no request being served, so there is no client to
-        discover anything to.  Returning a half-built document there would be
-        worse than declining.
+        No ``resource`` or ``scopes_supported`` here: those are the service's
+        own facts and belong to
+        :class:`~rhosocial.mcpserver.config.ServiceConfig`, so the two cannot
+        be sourced from different objects and published as one document.
         """
-        if self._config is None:
-            return None
-        from .metadata import protected_resource_metadata
-
-        return protected_resource_metadata(self._config)
+        advertised: dict[str, Any] = {"authorization_servers": [self._issuer]}
+        jwks_uri = getattr(self._jwks, "jwks_uri", None)
+        if jwks_uri:
+            # Optional in RFC 9728, and publishing it is what lets a client
+            # verify a token itself — e.g. a proxy doing coarse checks before
+            # this service ever sees the request.
+            advertised["jwks_uri"] = jwks_uri
+        return advertised
 
     # -- the SDK's interface -------------------------------------------
 

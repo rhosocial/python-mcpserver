@@ -8,10 +8,23 @@ remote MCP client — OpenCode, Cursor, Claude Code, Codex — does exactly this
 so a service that gets this document wrong is a service that cannot be logged
 into by an agent at all.
 
-The document is generated from :class:`~rhosocial.mcpserver.config.ResourceServerConfig`,
-never written by hand.  ``scopes_supported`` in particular is derived from the
-same vocabulary the enforcement middleware checks against, which is the only
-way to keep "what we advertise" and "what we accept" from drifting apart.
+The document is composed, never written by hand and never taken wholesale from
+one object.  Two things go into it and they come from different places:
+
+* what the service exposes — its name and its scope vocabulary, from
+  :class:`~rhosocial.mcpserver.config.ServiceConfig`;
+* where to authenticate — the issuer, the resource identifier and the key
+  location, from the :class:`~rhosocial.mcpserver.credentials.CredentialSource`
+  that would verify the token.
+
+That split is what lets a service whose credential source is a table of its own
+tokens answer ``None`` here and serve no document at all, rather than publishing
+an ``authorization_servers`` entry pointing at an issuer that does not exist.
+A client that reads such a document spends a discovery round trip failing.
+
+``scopes_supported`` is derived from the same vocabulary the enforcement
+middleware checks against, which is the only way to keep "what we advertise" and
+"what we accept" from drifting apart.
 """
 
 from __future__ import annotations
@@ -19,7 +32,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from ..config import PRM_PATH, ResourceServerConfig
+from ..config import PRM_PATH, ServiceConfig
+from ..credentials import DiscoverySource
 
 __all__ = [
     "protected_resource_metadata",
@@ -33,8 +47,21 @@ __all__ = [
 CACHE_CONTROL = "public, max-age=3600"
 
 
-def protected_resource_metadata(config: ResourceServerConfig) -> dict[str, Any]:
-    """The RFC 9728 document for *config*.
+def protected_resource_metadata(
+    config: ServiceConfig,
+    source: DiscoverySource | None = None,
+) -> dict[str, Any] | None:
+    """The RFC 9728 document, or ``None`` when there is nothing to discover.
+
+    Composed from two sources of truth that change for different reasons: the
+    service's own vocabulary, and the credential source's issuer.
+
+    ``None`` is the honest answer for a service that issues and checks its own
+    tokens.  There is no authorization server for a client to go to, and
+    publishing an ``authorization_servers`` entry that points nowhere costs a
+    client a discovery round trip to learn it cannot authenticate here.  Serving
+    nothing makes the well-known path a 404, which is a fact a client can act
+    on.
 
     ``authorization_servers`` lists the trusted issuer — this is the field a
     client reads to find out where to authenticate, and the field that makes
@@ -44,7 +71,6 @@ def protected_resource_metadata(config: ResourceServerConfig) -> dict[str, Any]:
     """
     document: dict[str, Any] = {
         "resource": config.resource,
-        "authorization_servers": [config.issuer],
         "scopes_supported": list(config.scopes_supported),
         # The MCP spec defines only the header method; saying so explicitly
         # stops a client from probing the form-encoded and query-parameter
@@ -53,15 +79,17 @@ def protected_resource_metadata(config: ResourceServerConfig) -> dict[str, Any]:
     }
     if config.service_name:
         document["resource_name"] = config.service_name
-    if config.jwks_uri:
-        # Optional in RFC 9728, and publishing it is what lets a client verify
-        # a token itself — e.g. a proxy doing coarse checks before this service
-        # ever sees the request.
-        document["jwks_uri"] = config.jwks_uri
+
+    if source is None:
+        return None
+    advertised = source.metadata()
+    if advertised is None:
+        return None
+    document.update(advertised)
     return document
 
 
-def protected_resource_metadata_url(config: ResourceServerConfig) -> str:
+def protected_resource_metadata_url(config: ServiceConfig) -> str:
     """The absolute URL of the metadata document.
 
     RFC 9728 §3.1 constructs this by inserting the well-known suffix
@@ -89,7 +117,7 @@ def protected_resource_metadata_url(config: ResourceServerConfig) -> str:
 
 
 def resource_metadata_challenge(
-    config: ResourceServerConfig,
+    config: ServiceConfig,
     error: str = "invalid_token",
     description: str | None = None,
 ) -> str:
@@ -113,7 +141,7 @@ def resource_metadata_challenge(
     return f"Bearer {', '.join(parts)}"
 
 
-def scope_challenge(config: ResourceServerConfig, required: str) -> str:
+def scope_challenge(config: ServiceConfig, required: str) -> str:
     """The challenge accompanying a 403, naming the scope that was missing."""
     challenge = resource_metadata_challenge(
         config,

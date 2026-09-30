@@ -46,7 +46,7 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from ..config import HEALTH_PATH, MCP_PATH, PRM_PATH, ServiceConfig
 from ..credentials import CredentialSource
 from ..errors import ConfigurationError
 from .middleware import (
@@ -83,14 +83,36 @@ DEFAULT_BIND_PORT = 8000
 def build_asgi_app(
     app: Any,
     *,
-    config: ResourceServerConfig,
+    config: ServiceConfig,
     verifier: CredentialSource,
     health: Callable[[], Awaitable[bool]] | None = None,
     mcp_path: str = MCP_PATH,
     max_body_bytes: int = MAX_BODY_BYTES,
     resolve_projection: bool = True,
+    enforce_protocol_revision: bool = False,
 ) -> Any:
     """Wrap *app* — the MCP SDK's ASGI application — in the four layers.
+
+    :param enforce_protocol_revision: refuse requests that do not declare the
+        2026-07-28 revision.  Off by default, and the default is a measured
+        choice rather than a shrug: this library targets 2026-07-28 and every
+        Tier 1 SDK can speak it, but the agents embedding those SDKs are not
+        there yet.  Claude Code 2.1.280 sends a legacy ``initialize`` *after* a
+        successful ``server/discover`` from a modern-only server
+        (anthropics/claude-code#96183), and the TypeScript SDK defaults to the
+        2025 handshake with no probe unless a host opts into
+        ``versionNegotiation: {mode: 'auto'}``.
+
+        It also rejects *unauthenticated* clients, which is the sharper edge: a
+        caller that has not yet learned the protocol version cannot present it,
+        and answering 400 instead of 401 removes the ``WWW-Authenticate``
+        challenge that OAuth discovery starts from.  Do not enable it until the
+        agent fleet in front of the service is known to be modern.
+
+        A parameter of the MCP assembly rather than a field of
+        :class:`~rhosocial.mcpserver.config.ServiceConfig`, because it says
+        which handshake this transport speaks and neither that nor the service's
+        scope vocabulary is what decides it.
 
     :param app: any ASGI application; normally
         ``MCPServer.streamable_http_app()``
@@ -107,10 +129,11 @@ def build_asgi_app(
     return ResourceEndpoints(
         config,
         health=health,
+        source=verifier,
         app=ScopeEnforcement(
             ProtocolRevisionGate(
                 PrincipalResolution(app, verifier, resolve_projection=resolve_projection),
-                enforce=config.enforce_protocol_revision,
+                enforce=enforce_protocol_revision,
             ),
             config=config,
             verifier=verifier,
@@ -120,7 +143,7 @@ def build_asgi_app(
     )
 
 
-def auth_settings(config: ResourceServerConfig) -> Any:
+def auth_settings(issuer: str, resource: str) -> Any:
     """The ``AuthSettings`` an ``MCPServer`` must be constructed with.
 
     Two settings here look like omissions, and neither is:
@@ -140,11 +163,20 @@ def auth_settings(config: ResourceServerConfig) -> Any:
     the latter to build the ``resource_metadata`` URL in its 401 challenge —
     which is how a client discovers the authorization server at all.
 
+    :param issuer: the authorization server, from
+        :class:`~rhosocial.mcpserver.config.OAuthConfig`.
+    :param resource: this service's public URL, from
+        :class:`~rhosocial.mcpserver.config.ServiceConfig`.  Two parameters
+        rather than one config because they come from the two: a service whose
+        credential source is a table of its own tokens has a resource URL and
+        no issuer, and passing one object would make it supply a field that
+        does not exist for it.
+
     ::
 
         server = MCPServer(
             name="notes",
-            auth=auth_settings(CONFIG),
+            auth=auth_settings(OAUTH.issuer, CONFIG.resource),
             token_verifier=verifier,
         )
     """
@@ -152,12 +184,12 @@ def auth_settings(config: ResourceServerConfig) -> Any:
     from pydantic import AnyHttpUrl
 
     return AuthSettings(
-        # The config holds validated strings and has already refused a non-https
-        # issuer, so pydantic's own validation here is redundant — but
+        # Both configurations hold validated strings and have already refused a
+        # non-https issuer, so pydantic's own validation here is redundant — but
         # AuthSettings is typed to take URLs, and converting is the honest way to
         # satisfy that rather than casting.
-        issuer_url=AnyHttpUrl(config.issuer),
-        resource_server_url=AnyHttpUrl(config.resource),
+        issuer_url=AnyHttpUrl(issuer),
+        resource_server_url=AnyHttpUrl(resource),
         required_scopes=[],
         validate_token_resource=False,
     )
@@ -166,11 +198,12 @@ def auth_settings(config: ResourceServerConfig) -> Any:
 def build_mcp_app(
     server: Any,
     *,
-    config: ResourceServerConfig,
+    config: ServiceConfig,
     verifier: CredentialSource,
     mcp_path: str = MCP_PATH,
     json_response: bool = False,
     resolve_projection: bool = True,
+    enforce_protocol_revision: bool = False,
     **kwargs: Any,
 ) -> Any:
     """:func:`build_asgi_app` around a configured ``MCPServer``.
@@ -223,6 +256,7 @@ def build_mcp_app(
         verifier=verifier,
         mcp_path=mcp_path,
         resolve_projection=resolve_projection,
+        enforce_protocol_revision=enforce_protocol_revision,
     )
 
 
