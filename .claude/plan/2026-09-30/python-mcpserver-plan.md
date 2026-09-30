@@ -1,7 +1,7 @@
 # python-mcpserver — 项目计划
 
 > **日期**: 2026-09-30
-> **状态**: 方案定稿，开工（Phase 1–3）
+> **状态**: Phase 1–3 已实施（187 tests / ruff / mypy 全绿，仓库已推 rhosocial/python-mcpserver）
 > **性质**: 私有仓库（`rhosocial/python-mcpserver`，PRIVATE）
 > **发行名**: `rhosocial-mcpserver` · **import**: `rhosocial.mcpserver`
 > **上游**: `rhosocial-activerecord>=1.0.0.dev30` + `mcp>=2.1`（Streamable HTTP）
@@ -126,23 +126,34 @@ JWT access token (ES256/RS256/EdDSA, TTL 5–15 min)
 
 ```
 src/rhosocial/mcpserver/
-├── __init__.py        # 稳定公开 API（唯一门面）
+├── __init__.py        # 稳定公开 API（唯一门面，58 项）
 ├── config.py          # ResourceServerConfig：env 驱动的封闭词表 + 工具 scope 映射
-├── errors.py          # McpServerError / Unauthenticated / ScopeDenied / ProvisioningFailed
+├── errors.py          # McpServerError / Unauthenticated / ProvisioningError /
+│                      #   PrincipalNotResolved / JwkUnavailable / ConfigurationError
 ├── identity.py        # Principal + current_principal() + request-scope memo
-├── jwks.py            # JwksCache：ETag/TTL/kid 轮换/单飞/降级
-├── verifier.py        # JwtTokenVerifier + 请求内 memo + legacy 本地表校验器
-├── scopes.py          # ScopeSet 封闭词表 + tool_scopes 映射
-├── metadata.py        # protected_resource_metadata()（RFC 9728）
-├── middleware.py      # ScopeEnforcement / HealthProbe / BodyGuard
+├── jwks.py            # JwksCache：TTL/kid 轮换/单飞/降级
+├── verifier.py        # JwtTokenVerifier + 请求内 memo
+├── scopes.py          # ScopeSet 封闭词表 + ScopePolicy 工具映射
+├── metadata.py        # protected_resource_metadata()（RFC 9728）+ challenge 构造
+├── middleware.py      # ScopeEnforcement / PrincipalResolution / ResourceEndpoints
 ├── tables.py          # TableNamespace（前缀单一出处）
 ├── orm/
-│   ├── __init__.py
-│   ├── principal.py   # PrincipalMixin（按 central_user_id 解析 + 自动开户）
+│   ├── __init__.py    # assert_protected() 启动期守卫
+│   ├── ddl.py         # 投影表 DDL + serial_type_for(dialect)
+│   ├── principal.py   # PrincipalMixin（解析 + 首次开户 + 请求内 memo）
 │   ├── scoped.py      # PrincipalScopedQuery
 │   └── owned.py       # PrincipalOwnedMixin
-├── app.py             # build_asgi_app()：把上面这些接成一个 ASGI 应用
-└── cli.py             # mcpserver CLI
+├── app.py             # build_asgi_app() / build_mcp_app() / auth_settings() / serve()
+└── cli.py             # rhosocial-mcpserver: decode / jwks / prm / policy
+```
+
+**装配顺序是承重的**（`app.py` 的模块 docstring 完整说明每层为什么必须在那个位置）：
+
+```
+ResourceEndpoints      PRM 文档、/healthz
+  └── ScopeEnforcement 逐工具 403（需要读 body）
+       └── PrincipalResolution 解析投影（每请求一次）
+            └── SDK 应用  401 + auth ContextVar
 ```
 
 > `src/rhosocial/` 保持 PEP 420 命名空间（**无** `__init__.py`），
@@ -170,7 +181,7 @@ src/rhosocial/mcpserver/
 
 ## 5. 实施阶段
 
-### Phase 1 — 凭据链（无数据库依赖，可独立单测）✅ 本次开工范围
+### Phase 1 — 凭据链（无数据库依赖，可独立单测）✅
 
 - [x] `config.py` / `errors.py` / `scopes.py` / `tables.py`
 - [x] `jwks.py`：TTL + `Cache-Control` 夹取 + `kid` 轮换 + `asyncio.Lock` 单飞 +
@@ -182,19 +193,23 @@ src/rhosocial/mcpserver/
 - [x] `middleware.py`：PRM / health / body 限额 / 逐工具 403
 - [x] 全量单测（JWKS 轮换、算法混淆、aud 不匹配、无签名密钥、403 挑战头…）
 
-### Phase 2 — ORM 归属链
+### Phase 2 — ORM 归属链 ✅
 
 - [x] `orm/principal.py`：`PrincipalMixin.resolve()` + 首次访问自动开户
 - [x] `orm/scoped.py` / `orm/owned.py`
 - [x] 投影表 DDL 构造器（`IF NOT EXISTS`，无迁移）
 - [x] SQLite 实库测试
 
-### Phase 3 — 装配与下游接入
+### Phase 3 — 装配与 CLI ✅
 
-- [ ] `app.py`：把 verifier + middleware + PRM 接成一个 ASGI 应用
-- [ ] `cli.py`：`mcpserver decode` / `jwks` / `prm`
-- [ ] 下游 `schedule-manager` 切换（保留 `AUTH_ISSUER` 未配置时回落本地表）
-- [ ] 下游 `contact-manager` 切换
+- [x] `app.py`：`build_asgi_app()` / `build_mcp_app()` / `auth_settings()` / `serve()`
+- [x] `cli.py`：`decode` / `jwks` / `prm` / `policy`
+- [x] 端到端测试：真实 `MCPServer` + MCP SDK 官方客户端，走真实 HTTP
+
+### Phase 3.5 — 下游接入（未开始）
+
+- [ ] `schedule-manager` 切换（保留 `AUTH_ISSUER` 未配置时回落本地表）
+- [ ] `contact-manager` 切换
 
 ### Phase 4 — 互操作验证
 
@@ -207,7 +222,7 @@ authserver（签发端）、企业 EMA、组织策略、服务间 token exchange
 
 ---
 
-## 6. 待定案（Phase 3 前必须拍板）
+## 6. 待定案（下游接入前必须拍板）
 
 | # | 问题 | 倾向 | 后果 |
 |---|---|---|---|
@@ -233,7 +248,28 @@ mypy src/                 # 类型
 
 ---
 
-## 8. 风险与已知代价
+## 8. 实施中修正的三个真问题
+
+记在这里，因为它们都不是「写错了」，而是**沉默地错了，只有实测才暴露**：
+
+1. **`SERIAL` 在 SQLite 上不是 rowid 别名。** SQLite 接受任意类型名，于是
+   `"id" SERIAL PRIMARY KEY` 建出一个名叫 SERIAL 的普通列，`INSERT` 写入字面
+   `NULL`，每行读回来 id 都是空的——最终以 `int() argument must be … not
+   'NoneType'` 的形式出现在开户路径上，与类型毫无关系。已加
+   `serial_type_for(dialect)`：按方言自己的类型亲和规则问一次。
+2. **`PrincipalResolution` 里的 `from ..identity` 多写了一层。**
+   `middleware.py` 直接位于 `rhosocial/mcpserver/` 下，`..` 会到 `rhosocial`。
+   这是 mypy 抓出来的**真 import 错误**，不是类型洁癖。
+3. **`_create` 用 `hasattr(cls, "provided_by")` 判断字段是否存在。**
+   pydantic v2 的模型类不把字段暴露为类属性，于是守卫会**静默跳过**赋值，
+   `provided_by` 永远是空的。已改用 `model_fields`。
+
+第四个是设计层面的：`auth` 与 `token_verifier` 必须传给 `MCPServer(...)`
+**构造器**，SDK 不接受它们出现在 `streamable_http_app()` 上。而一个漏传
+`auth` 的 `MCPServer` 会**把工具开放给所有人且不发一言**——所以
+`build_mcp_app()` 检查而非假设，漏传直接抛 `ConfigurationError`。
+
+## 9. 风险与已知代价
 
 | 风险 | 处置 |
 |---|---|
@@ -241,4 +277,6 @@ mypy src/                 # 类型
 | AS 私钥轮换与 `kid` 未命中的竞态 | 一次刷新 + 5 秒负缓存，防抖 |
 | 撤销传播窗口 = AT TTL（5–15 min） | 高危操作由下游自行加 introspection 侧信道；本库不代劳 |
 | 下游两服务同时改导致各自半新半旧 | `AUTH_ISSUER` 双校验器并行 2 个版本后再删本地表 |
+| `register_projection` 是进程级全局 | 设计如此：一个进程服务一个服务，所以只有一个答案。测试里显式清空，并在 `PrincipalResolution` 上留 `resolve_projection=False` 供不使用 ORM 归属层的服务显式关掉 |
+| SDK 升级改动 `streamable_http_app` 签名 | 端到端测试用官方客户端跑通全流程，会先于下游服务发现 |
 | 本库成为「什么都往里塞」的垃圾桶 | §1.3 的六条「不做」是验收项，不是建议 |

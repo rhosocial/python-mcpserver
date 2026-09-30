@@ -49,6 +49,15 @@ Typical wiring::
 
 from __future__ import annotations
 
+from .app import (
+    DEFAULT_BIND_HOST,
+    DEFAULT_BIND_PORT,
+    BindSettings,
+    auth_settings,
+    build_asgi_app,
+    build_mcp_app,
+    serve,
+)
 from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
 from .errors import (
     ConfigurationError,
@@ -89,8 +98,10 @@ from .orm import (
     PrincipalScopedQuery,
     assert_protected,
     clear_principal_id,
+    create_projection_schema,
     create_projection_table,
     current_principal_id,
+    drop_projection_schema,
     drop_projection_table,
     ensure_principal_id,
     projection_indexes,
@@ -110,6 +121,16 @@ __all__ = [
     "MCP_PATH",
     "PRM_PATH",
     "HEALTH_PATH",
+    # assembly
+    "build_asgi_app",
+    "build_mcp_app",
+    "auth_settings",
+    "serve",
+    "BindSettings",
+    "DEFAULT_BIND_HOST",
+    "DEFAULT_BIND_PORT",
+    "create_projection_schema",
+    "drop_projection_schema",
     # credentials
     "JwksCache",
     "Jwk",

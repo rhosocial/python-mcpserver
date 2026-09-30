@@ -19,7 +19,9 @@ from __future__ import annotations
 from typing import Any
 
 from .ddl import (
+    create_projection_schema,
     create_projection_table,
+    drop_projection_schema,
     drop_projection_table,
     projection_indexes,
 )
@@ -49,8 +51,10 @@ __all__ = [
     "PrincipalOwnedMixin",
     "assert_protected",
     "create_projection_table",
+    "create_projection_schema",
     "projection_indexes",
     "drop_projection_table",
+    "drop_projection_schema",
     "current_principal_id",
     "ensure_principal_id",
     "publish_principal_id",

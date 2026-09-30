@@ -23,6 +23,7 @@ on the hot path.
 | **Enforce per tool** | An HTTP 403 naming the missing scope, produced at the ASGI layer where a status code exists. |
 | **Answer discovery** | RFC 9728 protected-resource metadata, generated from the same scope vocabulary the enforcement checks. |
 | **Tie rows to callers** | Two enforcement points — a scoped query class and a save hook — so no query and no write can cross a principal. |
+| **Assemble the app** | `build_mcp_app` orders the layers and refuses to serve if the SDK was built without a verifier. |
 | **Project the identity** | A local row per central user, created on first use, holding only what the service needs. |
 
 ## What it deliberately does not do
@@ -48,15 +49,16 @@ backends come from the corresponding `rhosocial-activerecord-<name>` package.
 ```python
 from rhosocial.mcpserver import (
     NO_SCOPE,
-    ResourceServerConfig,
     JwtTokenVerifier,
     JwksCache,
     PrincipalMixin,
     PrincipalOwnedMixin,
     PrincipalScopedQuery,
-    ResourceEndpoints,
-    ScopeEnforcement,
+    ResourceServerConfig,
     TableNamespace,
+    auth_settings,
+    build_mcp_app,
+    serve,
 )
 
 tables = TableNamespace("sm")          # one prefix; every name derives from it
@@ -118,16 +120,57 @@ async def get_contact(name: str) -> str:
     return contact.name
 ```
 
-Wiring:
+Wiring — the order is load-bearing, and `rhosocial/mcpserver/app.py` says why
+each layer is where it is:
 
 ```python
-app = ScopeEnforcement(
-    PrincipalResolution(mcp_asgi_app),      # resolves principal_id per request
+from mcp.server.mcpserver import MCPServer
+
+server = MCPServer(
+    name="notes",
+    auth=auth_settings(CONFIG),      # required_scopes=[] on purpose
+    token_verifier=verifier,        # omit either and every tool is public
+)
+
+app = build_mcp_app(
+    server,
     config=CONFIG,
     verifier=verifier,
+    health=probe,                     # should touch the database
+    transport_security=TransportSecuritySettings(
+        # Only auto-disabled for a loopback bind; behind a proxy that rewrites
+        # Host, an unset allowlist refuses every request as a rebinding attempt.
+        allowed_hosts=["contacts.example.com"],
+        allowed_origins=["https://contacts.example.com"],
+    ),
 )
-app = ResourceEndpoints(CONFIG, health=probe)(app)   # PRM + /healthz
+serve(app)
 ```
+
+## Inspecting a deployment
+
+```bash
+# Verify a token and print the principal it resolves to — the first thing to run
+# when an agent "cannot log in".
+rhosocial-mcpserver decode --issuer https://auth.example.com \
+    --resource https://calendar.example.com/mcp --token-file ~/.config/x/token
+
+# Which keys does the service see?  (An unreachable AS exits 2, not 1.)
+rhosocial-mcpserver jwks --issuer ... --resource ...
+
+# What does a client discover, and does it match what is enforced?
+rhosocial-mcpserver prm --scopes 'schedules:read,schedules:write' \
+    --tools 'whoami:,list_schedules=schedules:read'
+
+# Catch a tool naming a scope that is not in the vocabulary — at the terminal,
+# not on the first request that reaches it in production.
+rhosocial-mcpserver policy \
+    --scopes 'schedules:read,schedules:write' \
+    --tools 'whoami:,list_schedules=schedules:read,create_schedule=schedules:write'
+```
+
+No subcommand takes a token as an argument: a credential on a command line is in
+the shell history, in `ps`, and in every process listing on the machine.
 
 ## Design notes
 
@@ -157,6 +200,10 @@ takes a `user_id`. `PrincipalScopedQuery.__init__` and
 and the second is a *synchronous* hook — which is why the projection is
 resolved in middleware rather than inside it. A third enforcement point would
 mean a third place to forget.
+
+**A missing verifier is an error, not a warning.** An `MCPServer` built without
+`token_verifier` serves every tool to every caller and says nothing, so
+`build_mcp_app` checks rather than assumes.
 
 The reasoning behind each of these, and the failure it prevents, is in
 [`.claude/rules/security.md`](.claude/rules/security.md).

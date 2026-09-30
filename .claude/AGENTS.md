@@ -34,7 +34,13 @@ so there is **no** `src/rhosocial/__init__.py`). Tests live in
 7. **No SQL in this library.** All DB access goes through `Model.query()`. This
    is what makes rule 4 checkable: there is no CTE path to route around.
 8. **Table names have exactly one source** (`tables.TableNamespace`), including
-   index names — PostgreSQL puts every index in one namespace.
+   index names — PostgreSQL puts every index in one namespace. Pass the *bare*
+   table name to `index()`; it prefixes for you.
+9. **A resolver must never guess a type from a Postgres spelling.** `SERIAL` is
+   a literal `NULL` column on SQLite. Ask the dialect — see
+   `orm/ddl.serial_type_for`.
+10. **Never let an unverified claim reach a user as a fact.** The CLI's
+    `--raw` output is labelled `UNVERIFIED`; the metadata document is not.
 
 ## Repository map
 
@@ -48,18 +54,23 @@ src/rhosocial/mcpserver/
 ├── verifier.py     # JwtTokenVerifier + request-scope memo
 ├── scopes.py       # ScopeSet + tool→scope mapping
 ├── metadata.py     # RFC 9728 protected resource metadata
-├── middleware.py   # ScopeEnforcement / HealthProbe / BodyGuard
+├── metadata.py     # RFC 9728 document + challenge headers
+├── middleware.py   # ScopeEnforcement / PrincipalResolution / ResourceEndpoints
 ├── tables.py       # TableNamespace
-├── orm/            # principal.py / scoped.py / owned.py
-├── app.py          # build_asgi_app()
-└── cli.py          # mcpserver CLI
+├── orm/            # principal.py / scoped.py / owned.py / ddl.py
+├── app.py          # build_asgi_app() / build_mcp_app() / auth_settings() / serve()
+└── cli.py          # rhosocial-mcpserver: decode / jwks / prm / policy
 ```
+
+The layer order in `app.py` is load-bearing: `ResourceEndpoints` →
+`ScopeEnforcement` → `PrincipalResolution` → the SDK app. Each module's
+docstring says why its layer cannot be moved.
 
 ## Rules Index
 
 | File | When to use |
 |------|-------------|
-| [.claude/plan/2026-09-30/python-mcpserver-plan.md](plan/2026-09-30/python-mcpserver-plan.md) | Why the project exists, its boundary, phases |
+| [plan/2026-09-30/python-mcpserver-plan.md](plan/2026-09-30/python-mcpserver-plan.md) | Why the project exists, its boundary, phases, and the three silent bugs found while building it |
 | [rules/code-style.md](rules/code-style.md) | Naming, typing, docs, line width |
 | [rules/security.md](rules/security.md) | JWT/JWKS/scope/identity rules with the reasoning |
 | [rules/testing.md](rules/testing.md) | Test layout, fixtures, how to run |

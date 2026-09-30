@@ -45,6 +45,8 @@ __all__ = [
     "create_projection_table",
     "projection_indexes",
     "drop_projection_table",
+    "create_projection_schema",
+    "drop_projection_schema",
     "serial_type_for",
     "BARE_PRINCIPALS",
     "TIMESTAMP",
@@ -212,3 +214,40 @@ def column(
         dialect.parse_type(sql_type),
         constraints=constraints or None,
     )
+
+
+async def create_projection_schema(
+    backend: Any,
+    tables: TableNamespace,
+    *,
+    extra_columns: Sequence[Any] = (),
+) -> list[str]:
+    """Create the projection table and its indexes if absent.  Returns the SQL run.
+
+    Every statement is ``IF NOT EXISTS``, so this is safe to call on every
+    boot — but a service with more than one replica should still run it as a
+    deploy step rather than at startup.  Replicas booting together all issue
+    the same ``CREATE TABLE`` and contend on the same locks, and the loser
+    sometimes wins the lock and blocks the others' connections for the length of
+    the DDL, which reads in a health check as an outage.
+    """
+    dialect = backend.dialect
+    statements: list[str] = []
+    for expression in (
+        create_projection_table(dialect, tables, extra_columns=extra_columns),
+        *projection_indexes(dialect, tables),
+    ):
+        await backend.execute(*expression.to_sql())
+        statements.append(str(expression.to_sql()[0]))
+    return statements
+
+
+async def drop_projection_schema(backend: Any, tables: TableNamespace) -> str:
+    """Drop the projection table if present.  Returns the SQL run.
+
+    Only ever touches a prefixed name.  A service's database may be shared with
+    another service, and dropping another service's tables destroys its data.
+    """
+    expression = drop_projection_table(backend.dialect, tables)
+    await backend.execute(*expression.to_sql())
+    return str(expression.to_sql()[0])

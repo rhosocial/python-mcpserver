@@ -96,20 +96,28 @@ class ResourceEndpoints:
     Neither belongs to the MCP protocol, so the SDK routes neither, and both
     have to be answered before authentication: a client that cannot read the
     metadata document cannot know where to authenticate.
+
+    Also the outermost layer in :func:`rhosocial.mcpserver.app.build_asgi_app`,
+    where it must come *first* — it is what turns a bare 404 from the SDK into
+    the document that makes the 401 actionable.  Anything it does not claim is
+    delegated to the wrapped application, which produces its own 404.
     """
 
-    __slots__ = ("_config", "_health")
+    __slots__ = ("_config", "_health", "_app")
 
     def __init__(
         self,
         config: ResourceServerConfig,
         health: Callable[[], Awaitable[bool]] | None = None,
+        app: Any = None,
     ) -> None:
         self._config = config
         self._health = health
+        self._app = app
 
-    async def __call__(self, scope: Mapping[str, Any], receive: Receive, send: Send) -> None:
+    async def __call__(self, scope: Any, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
+            await self._delegate(scope, receive, send)
             return
         method = scope.get("method")
         path = scope.get("path", "")
@@ -127,7 +135,14 @@ class ResourceEndpoints:
             await self._send_health(send)
             return
 
-        await _send_json(send, 404, {"error": "not_found"})
+        await self._delegate(scope, receive, send)
+
+    async def _delegate(self, scope: Any, receive: Receive, send: Send) -> None:
+        if self._app is None:
+            # Terminal, used standalone in tests: a 404 rather than a hang.
+            await _send_json(send, 404, {"error": "not_found"})
+            return
+        await self._app(scope, receive, send)
 
     async def _send_health(self, send: Send) -> None:
         """Report whether this process can actually serve.
@@ -315,45 +330,76 @@ def _required_tool(payload: Any) -> str | None:
 class PrincipalResolution:
     """Publishes the caller's identity and resolved ``principal_id`` for the request.
 
-    Runs *after* the SDK's authentication, because it needs the token the SDK
-    already verified.  Its whole job is the one query the two synchronous
-    enforcement points cannot do themselves: resolving (and on first use,
-    creating) the local projection row.
+    Runs before the SDK's application, and does the one thing the two
+    synchronous enforcement points cannot: resolve — and on first use, create —
+    the local projection row.
 
-    Without it, every request fails with
+    **Why it re-reads the header rather than the SDK's auth context.**  The
+    SDK's ``AuthContextMiddleware`` sets its ContextVar *inside* the application
+    it wraps, so a middleware sitting outside it would find nothing there.  The
+    alternative, moving this inside, is not available: the SDK does not expose
+    the innermost ASGI app, only the composed Starlette one.
+
+    The cost of reading the header is one header parse, because the resolution
+    it needs was already done by :class:`ScopeEnforcement` a layer up and is
+    waiting in the request-scope memo.  :meth:`_record_for` checks the memo
+    first, so the common path does no signature verification twice — and when
+    this middleware is mounted without :class:`ScopeEnforcement`, it verifies
+    once on its own and everything still works.
+
+    Without it, every request that touches an owned model fails with
     :class:`~rhosocial.mcpserver.errors.PrincipalNotResolved` — which is the
     intended behaviour, because the alternative (letting the hooks resolve)
     would mean a nested event loop inside every save.
+
+    ``resolve_projection=False`` publishes the identity without resolving the
+    projection, for a service that uses neither
+    :class:`~rhosocial.mcpserver.orm.scoped.PrincipalScopedQuery` nor
+    :class:`~rhosocial.mcpserver.orm.owned.PrincipalOwnedMixin` — a proxy, or a
+    read-only service whose tools take no identity at all.  The flag exists
+    because *detecting* the absence of a projection model would be worse than
+    useless: a service that does use the ownership layer and forgot to register
+    its model would then serve every principal's rows and say nothing, which is
+    the one failure this package exists to prevent.
 
     A failure here answers **503**, not 401.  The credential was good; the
     service could not do its work.  A load balancer retries a 503 and gives up
     on a 401, and this request is worth retrying.
     """
 
-    __slots__ = ("_app",)
+    __slots__ = ("_app", "_verifier", "_resolve")
 
-    def __init__(self, app: Any) -> None:
+    def __init__(
+        self,
+        app: Any,
+        verifier: JwtTokenVerifier | None = None,
+        *,
+        resolve_projection: bool = True,
+    ) -> None:
         self._app = app
+        self._verifier = verifier
+        self._resolve = resolve_projection
 
     async def __call__(self, scope: Any, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self._app(scope, receive, send)
             return
 
-        from mcp.server.auth.middleware.auth_context import get_access_token
-
-        record = get_access_token()
-        if record is None or not record.subject:
-            # Unauthenticated, or a token with no subject.  Not this layer's
-            # call to make: the SDK owns the 401 and its challenge.
+        token = parse_bearer(_header(scope, "authorization"))
+        if token is None:
+            # Unauthenticated.  Not this layer's call to make: the SDK owns the
+            # 401 and its challenge.
             await self._app(scope, receive, send)
             return
 
-        from .identity import (
-            Principal,
-            reset_current_principal,
-            set_current_principal,
-        )
+        record = await self._record_for(token)
+        if record is None or not record.subject:
+            # Present but unusable, or a token with no subject.  The SDK answers
+            # either, and its 401 carries the challenge that starts discovery.
+            await self._app(scope, receive, send)
+            return
+
+        from .identity import Principal, reset_current_principal, set_current_principal
         from .orm.principal import ensure_principal_id
 
         principal = Principal(
@@ -367,7 +413,8 @@ class PrincipalResolution:
 
         principal_token = set_current_principal(principal)
         try:
-            await ensure_principal_id(principal)
+            if self._resolve:
+                await ensure_principal_id(principal)
         except Exception as exc:
             log.warning("could not resolve the principal projection: %s", exc)
             await _send_json(
@@ -380,6 +427,30 @@ class PrincipalResolution:
             await self._app(scope, receive, send)
         finally:
             reset_current_principal(principal_token)
+
+    async def _record_for(self, token: str) -> Any:
+        """The resolved credential, from the memo if a layer above already did it.
+
+        Falling back to a real verification means this middleware is usable on
+        its own — which matters for a service that mounts it without
+        :class:`ScopeEnforcement`, and for the tests that exercise it alone.
+        """
+        from .verifier import publish_verified, take_verified
+
+        memo = take_verified(token)
+        if memo is not None:
+            # Put it back: the SDK's BearerAuthBackend is the next consumer, and
+            # consuming it here would only move the cost, not remove it.
+            publish_verified(token, memo)
+            return memo
+        if self._verifier is None:
+            return None
+        record = await self._verifier.verify_token(token)
+        if record is None:
+            return None
+        # A local memo for this layer's own use only; the SDK's verification
+        # happens in its own request context and will not read it.
+        return record
 
 
 # -- ASGI helpers --------------------------------------------------------
