@@ -54,7 +54,25 @@ class ResourceServerConfig:
     :param table_prefix: this service's SQL name prefix.
     :param service_name: the human-readable name published in the PRM document.
     :param algorithms: accepted asymmetric signing algorithms.
-    :param leeway_seconds: clock-skew tolerance on ``exp``/``nbf``.
+    :param leeway_seconds: clock-skew tolerance for ``exp``/``nbf``.
+    :param enforce_protocol_revision: refuse requests that do not declare
+        :data:`~rhosocial.mcpserver.middleware.PROTOCOL_REVISION`.
+
+        Off by default, and the default is a measured choice rather than a
+        shrug.  This library targets 2026-07-28 and every Tier 1 SDK can speak
+        it, but the agents that embed those SDKs are not there yet: Claude Code
+        2.1.280 sends a legacy ``initialize`` *after* a successful
+        ``server/discover`` from a modern-only server
+        (anthropics/claude-code#96183), and the TypeScript SDK defaults to the
+        2025 handshake with no probe unless a host opts into
+        ``versionNegotiation: {mode: 'auto'}``.  Turning this on rejects those
+        clients at the door.
+
+        It also rejects *unauthenticated* clients, which is the sharper edge: a
+        caller that has not yet learned the protocol version cannot present it,
+        and answering 400 instead of 401 removes the ``WWW-Authenticate``
+        challenge that OAuth discovery starts from.  Do not enable it until the
+        agent fleet in front of the service is known to be modern.
     """
 
     __slots__ = (
@@ -67,6 +85,7 @@ class ResourceServerConfig:
         "_service_name",
         "_algorithms",
         "_leeway",
+        "_enforce_protocol_revision",
     )
 
     def __init__(
@@ -82,6 +101,7 @@ class ResourceServerConfig:
         service_name: str | None = None,
         algorithms: Any = ("ES256", "RS256", "EdDSA"),
         leeway_seconds: int = 300,
+        enforce_protocol_revision: bool = False,
     ) -> None:
         resource = _normalize_url(resource, "resource")
         issuer = _normalize_url(issuer, "issuer")
@@ -109,6 +129,7 @@ class ResourceServerConfig:
         self._service_name = service_name or _default_service_name(resource)
         self._algorithms = tuple(algorithms)
         self._leeway = int(leeway_seconds)
+        self._enforce_protocol_revision = bool(enforce_protocol_revision)
         if not self._algorithms:
             raise ConfigurationError("at least one signing algorithm must be allowed")
 
@@ -144,6 +165,11 @@ class ResourceServerConfig:
     @property
     def leeway_seconds(self) -> int:
         return self._leeway
+
+    @property
+    def enforce_protocol_revision(self) -> bool:
+        """Whether to refuse requests that do not declare 2026-07-28."""
+        return self._enforce_protocol_revision
 
     @property
     def policy(self) -> ScopePolicy:

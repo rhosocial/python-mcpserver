@@ -150,7 +150,9 @@ async def test_missing_scope_is_a_403_with_a_usable_challenge(
     # Both parts matter: a client told it is insufficient but not which scope
     # retries the same scope and fails again.
     assert 'scope="schedules:write"' in challenge
-    assert f'resource_metadata="{RESOURCE.rstrip("/")}{PRM_PATH}"' in challenge
+    # RFC 9728 §3.1: the suffix goes between host and path, not appended.
+    host = RESOURCE.rsplit("/mcp", 1)[0]
+    assert f'resource_metadata="{host}{PRM_PATH}/mcp"' in challenge
     assert client.json()["error"] == "insufficient_scope"
     assert recorder.calls == 0, "the request must not reach the tool"
 

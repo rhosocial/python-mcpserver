@@ -43,7 +43,9 @@ from .verifier import JwtTokenVerifier, clear_verified, publish_verified
 __all__ = [
     "ScopeEnforcement",
     "PrincipalResolution",
+    "ProtocolRevisionGate",
     "ResourceEndpoints",
+    "PROTOCOL_REVISION",
     "parse_bearer",
 ]
 
@@ -67,6 +69,12 @@ DRAIN_CEILING_BYTES = 4 * 1024 * 1024
 #: without a server.
 Receive = Callable[[], Awaitable[Mapping[str, Any]]]
 Send = Callable[[Mapping[str, Any]], Awaitable[None]]
+
+#: The one MCP protocol revision this library speaks.  Named here rather than
+#: read from the SDK so that an SDK upgrade cannot silently widen or narrow what
+#: a deployed service accepts: the constant is the contract, and the test that
+#: pins it is what fails when the two disagree.
+PROTOCOL_REVISION = "2026-07-28"
 
 
 class _BodyTooLarge(Exception):
@@ -325,6 +333,72 @@ def _required_tool(payload: Any) -> str | None:
         return None
     name = params.get("name")
     return name if isinstance(name, str) else None
+
+
+class ProtocolRevisionGate:
+    """Refuse every protocol revision other than :data:`PROTOCOL_REVISION`.
+
+    The MCP SDK does **not** do this, and answering a request from a client that
+    negotiated an older revision is worse than refusing it.  Measured against
+    ``mcp==2.2.0``: a POST carrying ``initialize`` with
+    ``MCP-Protocol-Version: 2025-11-25`` is answered ``200`` and *negotiates
+    down* to ``2025-11-25``.  So a service left on the SDK alone keeps serving
+    a transport shape that revision 2026-07-28 deleted — session ids, the
+    ``initialize`` handshake, the standalone GET stream — while looking
+    perfectly healthy.
+
+    That matters here because those shapes are exactly the ones this library's
+    security decisions were not reasoned about.  :class:`ScopeEnforcement` reads
+    the tool name from the request body; a legacy peer is not required to carry
+    ``Mcp-Method`` / ``Mcp-Name`` (SEP-2243), so a version skew is not merely an
+    old-but-equivalent shape, it is one where two independent halves of this
+    library disagree about where a tool name lives.
+
+    The refusal reuses the SDK's own vocabulary — JSON-RPC error code
+    ``-32022`` with ``{supported, requested}`` — because a client that has to
+    understand this rejection already parses that shape for other reasons, and
+    because a bespoke error here would be one more thing to keep in step.
+
+    Requests that declare no version at all are refused too.  Pre-2025-06-18
+    clients omit the header, and the specification says a server that does not
+    support them *must* reject rather than assume ``2025-03-26`` — assuming is
+    what produces a service that silently serves a revision it never tested.
+    """
+
+    __slots__ = ("_app", "_mcp_path", "_enforce")
+
+    def __init__(self, app: Any, mcp_path: str = MCP_PATH, *, enforce: bool = False) -> None:
+        self._app = app
+        self._mcp_path = mcp_path
+        self._enforce = enforce
+
+    async def __call__(self, scope: Mapping[str, Any], receive: Receive, send: Send) -> None:
+        if not self._enforce:
+            await self._app(scope, receive, send)
+            return
+
+        if scope.get("method") != "POST" or scope.get("path", "") != self._mcp_path:
+            await self._app(scope, receive, send)
+            return
+
+        requested = _header(scope, "mcp-protocol-version")
+        if requested == PROTOCOL_REVISION:
+            await self._app(scope, receive, send)
+            return
+
+        await _send_json(
+            send,
+            400,
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32022,
+                    "message": "Unsupported protocol version",
+                    "data": {"supported": [PROTOCOL_REVISION], "requested": requested},
+                },
+            },
+        )
 
 
 class PrincipalResolution:

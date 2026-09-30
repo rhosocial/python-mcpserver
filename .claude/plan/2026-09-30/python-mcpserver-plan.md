@@ -372,6 +372,7 @@ import 它，而本包没有任何地方提到它——我的本地 venv 是早�
 
 | 风险 | 处置 |
 |---|---|
+| **只支持 2026-07-28 的传输形态**（2026-09-30 补充） | 目标修订版是 **2026-07-28**，删除了 protocol-level session、`Mcp-Session-Id`、`initialize` 握手与独立 GET 流。`build_mcp_app` 因此**移除了 `stateless_http` 参数**并固定传 `True`。**理由不是「打开 2026-07-28」**——实测表明 2026-07-28 请求在两种模式下都由 SDK 无状态处理；该参数只决定 SDK 是否维护 session 表与 event store，而 2026-07-28 对二者均无用。保留 session 机制意味着白白持有 `max_sessions`（默认 10 000）与 `session_idle_timeout`。详见 §10。旧修订版由 SDK 顺带兼容，但本库既不测试也不承诺 |
 | JWKS 首请求有网络延迟 | 预热：`JwksCache.prefetch()` 在 lifespan 里先拉一次 |
 | AS 私钥轮换与 `kid` 未命中的竞态 | 一次刷新 + 5 秒负缓存，防抖 |
 | 撤销传播窗口 = AT TTL（5–15 min） | 高危操作由下游自行加 introspection 侧信道；本库不代劳 |
@@ -380,3 +381,193 @@ import 它，而本包没有任何地方提到它——我的本地 venv 是早�
 | SDK 升级改动 `streamable_http_app` 签名 | 端到端测试用官方客户端跑通全流程，会先于下游服务发现 |
 | 本地绿 ≠ CI 绿 | 本地全部测试跑的是**特性分支的 editable 安装**，不是任何可发布产物。`preflight` 是为此加的：让「pin 不可获取」在 5 秒内以一行字失败。**并且**任何依赖声明的改动，都要在一个全新 venv 里按 CI 的步骤复现一遍才算验证过——`aiosqlite` 就是这么漏的 |
 | 本库成为「什么都往里塞」的垃圾桶 | §1.3 的六条「不做」是验收项，不是建议 |
+
+## 10. 传输形态：实测而非推断（2026-09-30 补充）
+
+计划前七节没有一行提到协议版本。补这一节是因为 2026-07-28 刚改掉 Streamable HTTP 的核心语义，
+而「本库支持哪个修订版」是个必须显式回答的问题。
+
+### 事实
+
+| | |
+|---|---|
+| 本仓 `pyproject.toml` pin | `mcp>=2.1.0` |
+| 实测安装版本 | `mcp==2.2.0` |
+| SDK `LATEST_PROTOCOL_VERSION` | `2026-07-28` |
+| SDK `DEFAULT_NEGOTIATED_VERSION` | `2025-03-26`（落后三个修订版） |
+| `MODERN_PROTOCOL_VERSIONS` | `('2026-07-28',)` |
+| `server/discover` 自报 `supportedVersions` | `['2026-07-28']` |
+
+2026-07-28 相对 2025-11-25 的 Major changes：移除 protocol-level session 与 `Mcp-Session-Id`；
+移除 `initialize` 握手（version/capabilities 改走 `_meta`）；移除独立 GET 流端点；
+移除 SSE 可恢复性（`Last-Event-ID`）；`server/discover` 取代握手；
+新增必填路由头 `Mcp-Method` / `Mcp-Name`（SEP-2243）。
+
+### 一个被推翻的推断
+
+动手前我以为 `stateless_http=False`（原默认值）意味着「库默认站在旧规范那一边」，
+因为该模式依赖 `Mcp-Session-Id`、GET 流与 SSE 可恢复性——而这三条都被 2026-07-28 删除。
+
+**实测推翻了这个推断**：把 `stateless_http` 改成 `False` 后，2026-07-28 形状的
+`tools/call` 仍然 200、不发 `mcp-session-id`、`GET /mcp` 400。
+失败的是**旧形状**请求（无 session 的裸 POST）——即该参数只影响旧客户端。
+
+原因在 SDK `_handle_stateless_request`：`stateless` 只决定 `mcp_session_id=None`
+与 `event_store=None` 这两件事。新修订版根本不用 session 表与 event store，
+所以该开关与协议版本正交。
+
+**因此固定传 `True` 的正当理由不是「开启新规范」，而是「不为永不使用的 session 机制
+支付 `max_sessions=10000` 与 `session_idle_timeout` 的代价」**。参数本身被移除，
+因为让服务靠传一个 flag 去接上一套 session 传输，正是那种「读起来像刻意选择、
+实际并非如此」的配置。
+
+### 补的测试
+
+`test_end_to_end.py` 原有用 `session.initialize()`，即**旧握手**——四个新增用例改用
+裸 HTTP 发真正的 2026-07-28 形状（`_meta` 信封 + 三个路由头，无 session）：
+
+- `server/discover` 自报且仅自报 `2026-07-28`
+- 两次独立 `tools/call` 之间无 session 也能各自成功，且响应不签发 `mcp-session-id`
+- **逐工具 403 在新信封下依然生效**——工具名搬进了 `_meta` 与路由头，
+  只认旧 body 的解析器会静默失效，而失效方向是「不再拒绝任何东西」
+- `Mcp-Name` 与 body 不一致由 **SDK** 回 400（`-32020`），不是本库
+
+最后一条值得钉住：它看起来像是本库该做的事，但它不是。`ScopeEnforcement` 从不读路由头，
+头与 body 冲突在任何 scope 判定之前就被拒了。钉它是为了让下一个人知道边界在哪。
+
+顺带一提：`Mcp-Name` 承载工具名，本可让 `ScopeEnforcement` 不解析 body 就做判定
+（SEP-2243 明说这些头就是给「不解析 body 就能路由与检查」的中间件用的）。
+本库仍解析 body——功能正确、已由上述用例覆盖，但若将来 `max_body_bytes`
+要调大到放得下大参数，这是个优化点。
+
+### 未决
+
+旧客户端（Claude Code / Cursor / Codex 等目前仍发 `initialize`）由 SDK 顺带兼容。
+**本库没有主动拒绝它们的代码**，这是刻意的：现在拒绝会让尚未升级的 agent 直接连不上。
+「何时开始拒绝」需要一个日期，而不是现在拍板。
+
+## 11. 主流 coding agent 对 2026-07-28 的支持程度（2026-09-30 调研）
+
+结论一句话：**SDK 层已经就绪，agent 层没有。** 因此严格拒绝旧修订版被做成了**默认关闭**的开关。
+
+### SDK 层：Tier 1 全部支持
+
+| SDK | 版本 | 2026-07-28 | 备注 |
+|---|---|---|---|
+| C# | v2.2.0（2026-08-13） | 是 | 无状态是默认 session 模式 |
+| Python | v2.0.0（2026-07-28） | 是 | **本仓装的是 2.2.0** |
+| Go | v1.7.0（2026-07-28） | 是 | 需 `Stateless = true` |
+| Java | v2.0.1（2026-08-19） | **否** | 封顶 2025-11-25，3.x 排在 9 月 |
+
+### agent 层：关键的一条
+
+**Claude Code 2.1.280 在现代服务器成功回应 `server/discover` 之后，仍然发送旧式
+`initialize` 握手**（anthropics/claude-code#96183）。按 2026-07-28 规范，
+`supportedVersions: ["2026-07-28"]` 之后客户端应停留在 modern 模式——这是 Claude Code 的缺陷，
+但它就是当前最主流的客户端的实际行为。
+
+其他：
+
+- **TypeScript SDK v2** 有 `versionNegotiation: {mode: 'auto'}`（探测 `server/discover`），
+  但**默认是 legacy、不探测**。也就是说「SDK 支持」不等于「host 会用」——
+  要 modern 得由宿主显式开启。
+- **Codex CLI** v0.146.0「已注册 2026-07-28 feature flag」，处于过渡中。
+- Anthropic 官方博客（2026-07-28）措辞是「Support is being rolled out across Claude products」，
+  即约两个月前才开始铺开。
+- canimcp.dev 的 41 客户端兼容矩阵里，`server/discovery` 一列**全部是 Unknown**——
+  还没有可信的第三方逐客户端核实数据。
+
+### 为什么严格拒绝必须是默认关闭
+
+`ResourceServerConfig(enforce_protocol_revision=True)` 打开后会拒绝：
+
+`2025-11-25` / `2025-06-18` / `2025-03-26` / `2024-11-05` / **无 `MCP-Protocol-Version` 头**
+
+最后一项是最锋利的一刀：**未认证的客户端拿不到 400 之外的 401**，
+于是丢掉 `WWW-Authenticate` 挑战，而 OAuth 发现正是从那个挑战开始的。
+这不是「兼容性不便」，而是**把认证引导链切断**。
+
+实测（`mcp==2.2.0`，gate 关闭）：上述五种全部 200，其中 2025 系列会**协商降级**到 2025-11-25。
+也就是说「保持宽松」正是这些客户端今天能工作的原因。
+
+因此本库的立场是：**现代优先，但不假装生态已经到位。**
+`enforce_protocol_revision` 默认 `False`，并在 `ResourceServerConfig` 的 docstring 里
+写明打开的前提是「已知面前的服务只会是现代客户端」。
+
+### 什么时候可以翻默认值
+
+按证据，而不是按感觉：
+
+1. anthropics/claude-code#96183 关闭，且 Claude Code 不再在 modern 服务器上发 `initialize`；
+2. TS SDK 宿主侧的 `versionNegotiation.mode` 默认可用，或 Cursor / Copilot / Cline /
+   Gemini CLI 至少有一个完成 modern 切换并有可引用的核实来源；
+3. 本计划 §7 的 Phase 4（OpenCode / Cursor / Claude Code / Codex 四客户端首连全流程）
+   在 `enforce_protocol_revision=True` 下全绿。
+
+第 3 条是本库自己的门槛——它已经排在计划里，正好可以当作翻默认值的闸门。
+
+## 12. 修一个会打断 OAuth 2.1 增量授权的 PRM URL 错误（2026-09-30）
+
+§11 讨论协议版本时顺手核了 OAuth 2.1 资源服务器侧的义务，发现一个真 bug。
+
+### 症状
+
+只读令牌调用写工具 → 403，挑战头里给出：
+
+```
+WWW-Authenticate: Bearer error="insufficient_scope",
+  resource_metadata="/mcp/.well-known/oauth-protected-resource", scope="notes:write"
+```
+
+客户端按这个 URL 去取元数据 → **404**。实测：
+
+```
+[403 status] 403
+[403 challenge resource_metadata] /mcp/.well-known/oauth-protected-resource
+[following it] -> 404
+```
+
+### 根因
+
+`metadata.py::protected_resource_metadata_url` 原本是 `config.resource + PRM_PATH`，
+即**把后缀追加到资源标识符末尾**。RFC 9728 §3.1 要求的是**插到 host 与 path 之间**：
+
+> If the resource identifier value contains a path or query component, any
+> terminating slash (/) following the host component MUST be removed before
+> inserting /.well-known/ and the well-known URI path suffix **between the host
+> component and the path and/or query components**.
+
+对 `https://host/mcp`，正确形态是
+`https://host/.well-known/oauth-protected-resource/mcp`；
+追加得到的是 `https://host/mcp/.well-known/oauth-protected-resource`——
+那不是一个 well-known 位置，什么都解析不到。
+
+### 为什么之前没暴露
+
+**401 与 403 的挑战由两处不同的代码生成，而且此前不一致**：
+
+| | 生成方 | 修复前形态 |
+|---|---|---|
+| 401 | **SDK**（本库显式让出，见 `middleware.py` 的注释） | ✅ 正确 |
+| 403 | 本库 `scope_challenge()` | ❌ 404 |
+
+401 那条路径本库不参与，所以错误只存在于 403 这条。而 403 恰恰是
+**增量授权（step-up）** 路径：令牌权限不够时，客户端靠 403 里的 `scope=`
+去申请补授权，再靠 `resource_metadata` 去发现 AS。断在这里，
+增量授权就走不通了——这正是「mcp 服务要配合 OAuth 2.1」里最要紧的一环。
+
+### 修法
+
+按 §3.1 用 `urlsplit`/`urlunsplit` 重建 URL，五种形态全部覆盖（含无 path、
+多段 path、带 query），并加了 4 个 parametrize 用例 + 一个端到端用例
+（走「403 → 跟随 URL → 取到文档」整条链）。
+
+`middleware.py` 的路由用的是 `path.startswith(PRM_PATH)`，
+本来就覆盖 `/.well-known/oauth-protected-resource/mcp`，**不需要改**——
+即服务端一直提供正确的位置，只是把错误的位置广告出去了。
+
+### 教训
+
+这不是「拼错字符串」。401 那条路径由 SDK 生成，本库无从发现两处不一致；
+是**主动拿 RFC 逐条对照规范义务**才看出来的。已加进 §7 的验证方式。
+

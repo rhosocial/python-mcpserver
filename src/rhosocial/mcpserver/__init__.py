@@ -83,7 +83,9 @@ from .metadata import (
     scope_challenge,
 )
 from .middleware import (
+    PROTOCOL_REVISION,
     PrincipalResolution,
+    ProtocolRevisionGate,
     ResourceEndpoints,
     ScopeEnforcement,
     parse_bearer,
@@ -154,6 +156,8 @@ __all__ = [
     "NO_SCOPE",
     "ScopeEnforcement",
     "PrincipalResolution",
+    "ProtocolRevisionGate",
+    "PROTOCOL_REVISION",
     "ResourceEndpoints",
     "parse_bearer",
     "protected_resource_metadata",

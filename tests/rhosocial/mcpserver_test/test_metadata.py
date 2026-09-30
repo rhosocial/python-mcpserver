@@ -72,11 +72,18 @@ def test_service_name_is_derived_from_the_resource() -> None:
 
 def test_metadata_url_is_absolute(config) -> None:
     """A client that followed a redirect has no base to resolve a relative URL
-    against, so RFC 9728 §5.1 requires an absolute one."""
+    against, so RFC 9728 §5.1 requires an absolute one.
+
+    The URL is *not* the resource identifier with ``PRM_PATH`` appended: RFC
+    9728 §3.1 inserts the suffix between the host and the path. The exact
+    construction is pinned in ``test_end_to_end``; this asserts the shape.
+    """
     url = protected_resource_metadata_url(config)
 
     assert url.startswith("https://")
-    assert url.endswith(PRM_PATH)
+    assert PRM_PATH in url
+    # The resource's own path must follow the suffix, not precede it.
+    assert url.index(PRM_PATH) < url.rindex("/mcp")
 
 
 def test_challenge_carries_the_metadata_url(config) -> None:

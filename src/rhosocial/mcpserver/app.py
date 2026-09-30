@@ -9,23 +9,30 @@ something specific:
 
     ResourceEndpoints      PRM document, /healthz
       └── ScopeEnforcement per-tool 403, from the request body
-           └── PrincipalResolution   resolve the projection, once per request
-                └── <the SDK's app>   401 + the auth ContextVar
+           └── ProtocolRevisionGate  400 unless the revision is 2026-07-28
+                └── PrincipalResolution   resolve the projection, once per request
+                     └── <the SDK's app>   401 + the auth ContextVar
 
 **``ResourceEndpoints`` is outermost** because the metadata document and the
 health probe are unauthenticated by necessity: a client that cannot read the
 document cannot learn where to authenticate, and a load balancer needs the
 probe to answer without a credential.
 
-**``ScopeEnforcement`` is above ``PrincipalResolution``** because it already has
-the verified token in hand, and ``PrincipalResolution`` is cheaper when it can
-take the resolution from the request-scope memo instead of verifying again.
-Ordering it the other way would still be correct and one verification slower.
+**``ScopeEnforcement`` is above the rest** because it already has the verified
+token in hand, and ``PrincipalResolution`` is cheaper when it can take the
+resolution from the request-scope memo instead of verifying again.  Ordering it
+the other way would still be correct and one verification slower.
 
-**``PrincipalResolution`` is innermost** because it is the last thing that can
-fail before a tool runs, and a failure there — a valid credential against a
-database that will not accept writes — is a 503, not a 401.  A load balancer
-retries a 503 and gives up on a 401, and this request is worth retrying.
+**``ProtocolRevisionGate`` sits below the scope check and above everything that
+reads a request**.  A version refusal is a property of the conversation, not of
+the caller's permission, so it must not be dressed up as a 403 — and it has to
+precede ``PrincipalResolution``, which would otherwise do a database round trip
+to open a principal for a request that was never going to be served.
+
+**``PrincipalResolution`` is innermost of the four** because it is the last thing
+that can fail before a tool runs, and a failure there — a valid credential
+against a database that will not accept writes — is a 503, not a 401.  A load
+balancer retries a 503 and gives up on a 401, and this request is worth retrying.
 
 The SDK's app is left to produce **every** 401.  It is the only layer holding a
 ``WWW-Authenticate`` challenge that starts discovery, and duplicating it here
@@ -44,6 +51,7 @@ from .errors import ConfigurationError
 from .middleware import (
     MAX_BODY_BYTES,
     PrincipalResolution,
+    ProtocolRevisionGate,
     ResourceEndpoints,
     ScopeEnforcement,
 )
@@ -100,7 +108,10 @@ def build_asgi_app(
         config,
         health=health,
         app=ScopeEnforcement(
-            PrincipalResolution(app, verifier, resolve_projection=resolve_projection),
+            ProtocolRevisionGate(
+                PrincipalResolution(app, verifier, resolve_projection=resolve_projection),
+                enforce=config.enforce_protocol_revision,
+            ),
             config=config,
             verifier=verifier,
             mcp_path=mcp_path,
@@ -159,7 +170,6 @@ def build_mcp_app(
     verifier: JwtTokenVerifier,
     mcp_path: str = MCP_PATH,
     json_response: bool = False,
-    stateless_http: bool = False,
     resolve_projection: bool = True,
     **kwargs: Any,
 ) -> Any:
@@ -171,6 +181,27 @@ def build_mcp_app(
     supplied here — and this function checks rather than assumes, because an
     ``MCPServer`` built without them serves its tools to **everyone** and says
     nothing.  That is not a failure mode worth discovering in production.
+
+    The transport is **Streamable HTTP at protocol revision 2026-07-28**, and
+    this library targets no earlier revision.  That revision removed
+    protocol-level sessions, the ``Mcp-Session-Id`` header, the ``initialize``
+    handshake and the standalone GET stream.
+
+    ``stateless_http`` is therefore passed as ``True`` unconditionally, but the
+    reason is worth stating precisely, because it is *not* that the flag turns on
+    2026-07-28: a 2026-07-28 request is served statelessly whichever value is
+    set.  The flag decides only whether the SDK keeps a session table and an
+    event store — and revision 2026-07-28 has use for neither, so keeping that
+    machinery would mean holding ``max_sessions`` (10 000 by default) and a
+    ``session_idle_timeout`` for sessions that a modern client never opens.
+
+    Removing the parameter means a service cannot be wired to a session
+    transport by passing a flag, which is the shape of configuration that reads
+    as deliberate and turns out not to be.
+
+    A 2025-era client may still complete the handshake, because the SDK answers
+    it.  That is the SDK being accommodating rather than a contract offered
+    here: this library neither tests nor promises the pre-2026 transport.
     """
     settings = getattr(server, "settings", None)
     if getattr(settings, "auth", None) is None:
@@ -183,7 +214,7 @@ def build_mcp_app(
     inner = server.streamable_http_app(
         streamable_http_path=mcp_path,
         json_response=json_response,
-        stateless_http=stateless_http,
+        stateless_http=True,
         **kwargs,
     )
     return build_asgi_app(

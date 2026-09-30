@@ -39,6 +39,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from rhosocial.mcpserver import (
     NO_SCOPE,
+    PROTOCOL_REVISION,
     JwksCache,
     JwtTokenVerifier,
     ResourceServerConfig,
@@ -121,9 +122,6 @@ def app(fake_jwks: FakeJwks, clock) -> Any:
         server,
         config=config,
         verifier=verifier,
-        # Stateless so each request stands alone; a stateful session would hold
-        # the SSE stream open and change nothing these tests are about.
-        stateless_http=True,
         json_response=True,
         # These tools use `current_principal` but no owned model, so there is no
         # projection table to resolve.  The default path is exercised in
@@ -298,6 +296,12 @@ async def test_a_token_from_another_issuer_is_refused(app, signing_key) -> None:
 
 
 # -- the SDK's own client ------------------------------------------------
+#
+# `ClientSession.initialize()` is the *legacy* handshake, which revision
+# 2026-07-28 deleted.  These two tests are kept because the SDK's high-level
+# client is still the most likely thing an agent actually speaks, so a
+# regression here is a real outage — but they no longer describe the transport
+# this library targets.  The 2026-07-28 shape is pinned further down.
 
 
 async def test_a_real_client_completes_the_flow(app, signing_key) -> None:
@@ -376,7 +380,6 @@ async def test_the_default_path_requires_a_registered_projection(
         server,
         config=config,
         verifier=verifier,
-        stateless_http=True,
         json_response=True,
         transport_security=TransportSecuritySettings(
             allowed_hosts=["calendar.example.com"],
@@ -423,3 +426,270 @@ async def test_an_oversized_body_is_refused(app, signing_key) -> None:
         response = await client.post("/mcp", content=b"x" * 200_000)
 
     assert response.status_code == 413
+
+
+# -- protocol revision 2026-07-28 -----------------------------------------
+#
+# Everything above drives the SDK's client through `session.initialize()`,
+# which is the *legacy* handshake.  Revision 2026-07-28 deleted it, along with
+# protocol-level sessions, the `Mcp-Session-Id` header and the standalone GET
+# stream.  These tests therefore talk raw HTTP and send the request shape a
+# 2026-07-28 client actually sends, so the modern path is covered rather than
+# incidentally exercised.
+#
+# If the SDK ever stops accepting these, the library's transport support is
+# what broke -- not an accident in a test.
+
+PROTOCOL_VERSION = PROTOCOL_REVISION
+
+#: SEP-2575: version and client capabilities ride in `_meta`, since there is no
+#: longer a handshake whose result could carry them.
+MODERN_META = {
+    "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+    "io.modelcontextprotocol/clientCapabilities": {},
+}
+
+
+def modern(method: str, params: dict[str, Any] | None = None, **headers: str) -> dict[str, str]:
+    """The three routing headers 2026-07-28 requires on a POST (SEP-2243)."""
+    return {
+        "mcp-protocol-version": PROTOCOL_VERSION,
+        "mcp-method": method,
+        **({"mcp-name": params["name"]} if params and "name" in params else {}),
+        **headers,
+    }
+
+
+def modern_call(name: str, arguments: Any = None) -> dict[str, Any]:
+    """A ``tools/call`` in modern shape: no session id, version in ``_meta``."""
+    body = rpc("tools/call", {"name": name, "arguments": arguments or {}, "_meta": MODERN_META})
+    return {"body": body, "headers": modern("tools/call", {"name": name})}
+
+
+async def test_discovery_advertises_only_the_current_revision(app, signing_key) -> None:
+    """``server/discover`` replaces the handshake, and must offer 2026-07-28.
+
+    The old SDK default was ``DEFAULT_NEGOTIATED_VERSION = 2025-03-26``, three
+    revisions behind, so a service that never answers this correctly looks
+    healthy until a modern client arrives.
+    """
+    token = signing_key.sign(scope="notes:read notes:write")
+    async with LifespanManager(app), client_for(app, token) as client:
+        response = await client.post(
+            "/mcp",
+            json=rpc("server/discover", {"_meta": MODERN_META}),
+            headers=modern("server/discover"),
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["supportedVersions"] == [PROTOCOL_VERSION]
+
+
+async def test_a_tool_runs_without_a_handshake_or_a_session(app, signing_key) -> None:
+    """The core 2026-07-28 property: no ``initialize``, no ``Mcp-Session-Id``.
+
+    Two independent requests, no session between them -- which is exactly what
+    a stateful transport could not do, and therefore what would regress first
+    if this service were ever wired back to one.
+    """
+    token = signing_key.sign(scope="notes:read notes:write")
+    write = modern_call("add_note", {"title": "modern"})
+    read = modern_call("list_notes")
+
+    async with LifespanManager(app), client_for(app, token) as client:
+        first = await client.post("/mcp", json=write["body"], headers=write["headers"])
+        second = await client.post("/mcp", json=read["body"], headers=read["headers"])
+
+    assert first.status_code == 200, first.text
+    assert "added modern" in first.text
+    assert second.status_code == 200, second.text
+    assert "modern" in second.text
+    # No session was issued, so a client cannot be holding one open.
+    assert "mcp-session-id" not in first.headers
+
+
+async def test_scope_is_still_enforced_per_tool_in_the_modern_shape(app, signing_key) -> None:
+    """The 403 must survive the change of envelope.
+
+    Per-tool enforcement is this library's reason for existing, and the modern
+    request shape moves the tool name into ``_meta`` and the routing headers --
+    so a parser that only understood the legacy body would silently stop
+    refusing anything.
+    """
+    token = signing_key.sign(scope="notes:read")
+    write = modern_call("add_note", {"title": "nope"})
+
+    async with LifespanManager(app), client_for(app, token) as client:
+        response = await client.post("/mcp", json=write["body"], headers=write["headers"])
+
+    assert response.status_code == 403, response.text
+    assert "notes:write" in response.headers["www-authenticate"]
+
+
+async def test_a_mismatched_routing_header_is_the_sdks_refusal_not_ours(app, signing_key) -> None:
+    """``Mcp-Name`` must agree with the body; the SDK answers, and it is a 400.
+
+    Worth pinning because it looks like something this library should have
+    produced: it did not.  ``ScopeEnforcement`` never reads the routing
+    headers, and a header that disagrees with the body is refused before any
+    scope decision is reached.
+    """
+    token = signing_key.sign(scope="notes:read notes:write")
+    write = modern_call("add_note", {"title": "x"})
+    headers = write["headers"] | {"mcp-name": "list_notes"}
+
+    async with LifespanManager(app), client_for(app, token) as client:
+        response = await client.post("/mcp", json=write["body"], headers=headers)
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == -32020
+
+
+# -- the revision gate, when a service opts in ---------------------------
+
+def _strict_config() -> ResourceServerConfig:
+    return ResourceServerConfig(
+        resource=RESOURCE,
+        issuer=ISSUER,
+        scopes=["notes:read"],
+        tool_scopes={"whoami": NO_SCOPE},
+        table_prefix="t",
+        enforce_protocol_revision=True,
+    )
+
+
+@pytest.fixture
+def strict_app(fake_jwks: FakeJwks, clock) -> Any:
+    """A service that refuses anything but 2026-07-28."""
+    config = _strict_config()
+    cache = JwksCache(config.jwks_uri, fetch=fake_jwks.fetch, clock=clock)
+    verifier = JwtTokenVerifier(
+        cache, issuer=config.issuer, resource=config.resource, scope_set=config.policy.vocabulary
+    )
+    server = MCPServer(
+        name="notes", version="0.1.0", auth=auth_settings(config), token_verifier=verifier
+    )
+
+    @server.tool(description="Say who is calling.")
+    async def whoami() -> str:
+        return "someone"
+
+    return build_mcp_app(
+        server,
+        config=config,
+        verifier=verifier,
+        json_response=True,
+        resolve_projection=False,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["calendar.example.com"],
+            allowed_origins=["https://calendar.example.com"],
+        ),
+    )
+
+
+async def test_the_gate_admits_the_current_revision(strict_app, signing_key) -> None:
+    token = signing_key.sign(scope="notes:read")
+    call = modern_call("whoami")
+    async with LifespanManager(strict_app), client_for(strict_app, token) as client:
+        response = await client.post("/mcp", json=call["body"], headers=call["headers"])
+
+    assert response.status_code == 200, response.text
+    assert "someone" in response.text
+
+
+@pytest.mark.parametrize(
+    "version", ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", None]
+)
+async def test_the_gate_refuses_every_other_revision(strict_app, signing_key, version) -> None:
+    """Including no header at all, which is what a pre-2025-06-18 client sends.
+
+    Measured against the SDK with the gate off: all of these answer 200, and the
+    2025 ones *negotiate down*.  So leaving the gate off is what keeps those
+    clients working, which is why :class:`ProtocolRevisionGate` is opt-in.
+    """
+    token = signing_key.sign(scope="notes:read")
+    body = rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
+    headers = {"mcp-method": "initialize"}
+    if version is not None:
+        headers["mcp-protocol-version"] = version
+
+    async with LifespanManager(strict_app), client_for(strict_app, token) as client:
+        response = await client.post("/mcp", json=body, headers=headers)
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["code"] == -32022
+    assert error["data"]["supported"] == [PROTOCOL_VERSION]
+
+
+async def test_the_gate_off_is_what_keeps_legacy_clients_working(app, signing_key) -> None:
+    """The default must stay permissive, or this library breaks Claude Code.
+
+    See anthropics/claude-code#96183: Claude Code 2.1.280 sends a legacy
+    ``initialize`` even after a modern-only server answers ``server/discover``.
+    """
+    assert make_config().enforce_protocol_revision is False
+
+    token = signing_key.sign(scope="notes:read")
+    body = rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
+    async with LifespanManager(app), client_for(app, token) as client:
+        response = await client.post(
+            "/mcp",
+            json=body,
+            headers={"mcp-protocol-version": "2025-11-25", "mcp-method": "initialize"},
+        )
+
+    assert response.status_code == 200, response.text
+
+
+# -- RFC 9728 §3.1: where the metadata document lives --------------------
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    [
+        # No path component: the suffix alone.
+        ("https://rs.example.com", "https://rs.example.com/.well-known/oauth-protected-resource"),
+        # Path component: inserted *between host and path*, per §3.1. Appending
+        # it would give .../mcp/.well-known/..., which resolves nowhere.
+        (
+            "https://rs.example.com/mcp",
+            "https://rs.example.com/.well-known/oauth-protected-resource/mcp",
+        ),
+        ("https://rs.example.com/a/b", "https://rs.example.com/.well-known/oauth-protected-resource/a/b"),
+        # A query rides after the suffix, since §3.1 inserts before path *and* query.
+        (
+            "https://rs.example.com/mcp?tenant=1",
+            "https://rs.example.com/.well-known/oauth-protected-resource/mcp?tenant=1",
+        ),
+    ],
+)
+def test_the_metadata_url_is_built_per_rfc9728(resource: str, expected: str) -> None:
+    from rhosocial.mcpserver import protected_resource_metadata_url
+
+    config = ResourceServerConfig(
+        resource=resource, issuer=ISSUER, scopes=["notes:read"], tool_scopes={"t": "notes:read"}
+    )
+    assert protected_resource_metadata_url(config) == expected
+
+
+async def test_the_challenge_advertised_url_actually_resolves(app, signing_key) -> None:
+    """The whole discovery chain, end to end: 401 -> URL -> document.
+
+    Worth a test of its own because the two halves were produced by different
+    code — the SDK builds the 401 challenge, this library builds the 403 one —
+    and they disagreed. The 403 half advertised a URL that 404s, so a client
+    short a scope was told to fetch a document that does not exist.
+    """
+    token = signing_key.sign(scope="notes:read")
+    async with LifespanManager(app):
+        async with client_for(app, token) as client:
+            denied = await client.post("/mcp", json=call("add_note"))
+            advertised = denied.headers["www-authenticate"].split('resource_metadata="')[1]
+            advertised = advertised.split('"')[0]
+            fetched = await client.get(advertised)
+
+    assert denied.status_code == 403
+    assert advertised.endswith("/.well-known/oauth-protected-resource/mcp")
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["resource"] == RESOURCE

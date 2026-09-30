@@ -17,6 +17,7 @@ way to keep "what we advertise" and "what we accept" from drifting apart.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .config import PRM_PATH, ResourceServerConfig
 
@@ -63,11 +64,28 @@ def protected_resource_metadata(config: ResourceServerConfig) -> dict[str, Any]:
 def protected_resource_metadata_url(config: ResourceServerConfig) -> str:
     """The absolute URL of the metadata document.
 
-    Used in the ``WWW-Authenticate`` challenge, where RFC 9728 §5.1 requires
-    an absolute URL: a client that received a relative one has no base to
-    resolve it against when it followed a redirect to reach this service.
+    RFC 9728 §3.1 constructs this by inserting the well-known suffix
+    **between the host component and the path**, not by appending it to the
+    resource identifier.  For ``https://host/mcp`` that means
+    ``https://host/.well-known/oauth-protected-resource/mcp`` — appending would
+    give ``https://host/mcp/.well-known/oauth-protected-resource``, which is not
+    a well-known location, resolves nowhere, and therefore breaks discovery for
+    every client that follows it.
+
+    That is not hypothetical here: the 401 challenge is built by the SDK and
+    already carried the correct URL, while the 403 challenge came from
+    :func:`scope_challenge` and advertised the unresolvable one.  A read-only
+    token hitting a write tool was therefore told to fetch a document that 404s
+    — on exactly the step-up path a client needs when it is short a scope.
+
+    RFC 9728 §3 also requires an absolute URL: a client that received a relative
+    one has no base to resolve against after following a redirect to this
+    service.
     """
-    return config.resource.rstrip("/") + PRM_PATH
+    parts = urlsplit(config.resource)
+    path = parts.path.lstrip("/")
+    suffix = f"{PRM_PATH}/{path}" if path else PRM_PATH
+    return urlunsplit((parts.scheme, parts.netloc, suffix, parts.query, ""))
 
 
 def resource_metadata_challenge(
