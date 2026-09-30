@@ -35,6 +35,8 @@ from typing import Any
 import jwt
 from mcp.server.auth.provider import AccessToken
 
+from .config import ResourceServerConfig
+from .credentials import CredentialSource
 from .errors import Unauthenticated
 from .identity import Principal
 from .jwks import DEFAULT_ALGORITHMS, Jwk, JwksCache
@@ -42,6 +44,7 @@ from .scopes import ScopeSet
 
 __all__ = [
     "JwtTokenVerifier",
+    "resolve_for_sdk",
     "DEFAULT_LEEWAY_SECONDS",
     "publish_verified",
     "take_verified",
@@ -101,6 +104,7 @@ class JwtTokenVerifier:
         algorithms: Sequence[str] = DEFAULT_ALGORITHMS,
         leeway_seconds: int = DEFAULT_LEEWAY_SECONDS,
         require_subject: bool = True,
+        config: ResourceServerConfig | None = None,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -123,6 +127,7 @@ class JwtTokenVerifier:
         self._algorithms = tuple(algorithms)
         self._leeway = int(leeway_seconds)
         self._require_subject = require_subject
+        self._config = config
 
     @property
     def issuer(self) -> str:
@@ -136,6 +141,28 @@ class JwtTokenVerifier:
     def algorithms(self) -> tuple[str, ...]:
         return self._algorithms
 
+    # -- the CredentialSource interface ----------------------------------
+
+    def metadata(self) -> dict[str, Any] | None:
+        """The RFC 9728 document, naming the issuer this verifier trusts.
+
+        Returned by the verifier rather than built by the caller because the
+        thing a client must discover is *the authorization server behind these
+        tokens*, and only this object knows which one that is.  A caller
+        assembling the document itself would work right up until the service
+        trusted a second issuer.
+
+        ``None`` when the verifier was built without a config, which is the CLI
+        path: there is no request being served, so there is no client to
+        discover anything to.  Returning a half-built document there would be
+        worse than declining.
+        """
+        if self._config is None:
+            return None
+        from .metadata import protected_resource_metadata
+
+        return protected_resource_metadata(self._config)
+
     # -- the SDK's interface -------------------------------------------
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -147,18 +174,7 @@ class JwtTokenVerifier:
         converted back into that same ``None`` anyway.  The cause is logged and
         is visible in the service's own logs, which is the audience for it.
         """
-        cached = take_verified(token)
-        if cached is not None:
-            return cached
-
-        try:
-            principal = await self.verify(token)
-        except Exception as exc:
-            log.info("rejecting bearer token: %s", exc)
-            return None
-        if principal is None:
-            return None
-        return _to_access_token(principal, token)
+        return await resolve_for_sdk(self, token)
 
     # -- the actual verification ----------------------------------------
 
@@ -303,6 +319,34 @@ def _as_epoch(value: Any) -> int | None:
 
 def _as_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+async def resolve_for_sdk(source: CredentialSource, token: str) -> AccessToken | None:
+    """Resolve *token* through *source* into the shape the MCP SDK wants.
+
+    The one place a :class:`~rhosocial.mcpserver.credentials.CredentialSource`
+    becomes the SDK's :class:`AccessToken`, so every transport that speaks the
+    SDK's dialect gets the same memoisation and the same log line.  Duplicating
+    this per source would mean the second implementation is the one that forgets
+    to check the cache, and a token then gets verified twice per request.
+
+    ``None`` rather than an exception, because the SDK's contract is ``None``:
+    every 401 it produces carries the challenge header a client needs to start
+    discovery, and a raised error here would have to be converted back into that
+    same ``None`` anyway.  The cause is logged, which is the audience for it.
+    """
+    cached = take_verified(token)
+    if cached is not None:
+        return cached
+
+    try:
+        principal = await source.verify(token)
+    except Exception as exc:
+        log.info("rejecting bearer token: %s", exc)
+        return None
+    if principal is None:
+        return None
+    return _to_access_token(principal, token)
 
 
 def _to_access_token(principal: Principal, token: str) -> AccessToken:

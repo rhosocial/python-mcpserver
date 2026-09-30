@@ -33,6 +33,7 @@ from .errors import Unauthenticated
 
 __all__ = [
     "Principal",
+    "SELF_ISSUED",
     "current_principal",
     "current_principal_id",
     "current_central_user_id",
@@ -43,6 +44,12 @@ __all__ = [
 ]
 
 _UNTYPED = ""
+
+#: ``client_id`` for a credential this service minted itself.  Not an empty
+#: string: an empty ``client_id`` reads as "a client that failed to identify
+#: itself", which is a different thing from "there is no client", and the two
+#: show up differently when a log line is read six months later.
+SELF_ISSUED = "self"
 
 
 @dataclass(frozen=True)
@@ -56,8 +63,11 @@ class Principal:
     :param central_user_id: the ``sub`` from the authorization server, i.e. the
         identity *outside* this service.  This is the value every
         ``<prefix>_principals`` row is keyed on.
-    :param client_id: which OAuth client presented the token (an agent, a web
-        app, a service).  Not the same thing as the user, and one user has many.
+    :param client_id: which client presented the token (an agent, a web app, a
+        service).  Not the same thing as the user, and one user has many.  For a
+        credential this service issued itself there is no client to name, so
+        :data:`SELF_ISSUED` — a token that says who is asking and nothing about
+        who asked for it, which is the honest answer for a static token.
     :param scopes: the scopes the token carries.
     :param issuer: the authorization server that signed it.  Unique per issuer
         per RFC 7662 §2.2, which is why it is part of the identity rather than

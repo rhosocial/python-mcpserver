@@ -37,8 +37,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from .credentials import CredentialSource
 from .metadata import CACHE_CONTROL, protected_resource_metadata, scope_challenge
-from .verifier import JwtTokenVerifier, clear_verified, publish_verified
+from .verifier import clear_verified, publish_verified, resolve_for_sdk
 
 __all__ = [
     "ScopeEnforcement",
@@ -189,7 +190,7 @@ class ScopeEnforcement:
         app: Any,
         *,
         config: ResourceServerConfig,
-        verifier: JwtTokenVerifier,
+        verifier: CredentialSource,
         mcp_path: str = MCP_PATH,
         max_body_bytes: int = MAX_BODY_BYTES,
     ) -> None:
@@ -257,7 +258,7 @@ class ScopeEnforcement:
             await self._app(scope, replayed, send)
             return
 
-        record = await self._verifier.verify_token(token)
+        record = await resolve_for_sdk(self._verifier, token)
         if record is None:
             # Present but unusable — expired, wrong audience, unknown key.
             # Delegated to the SDK so every invalid-credential response comes
@@ -446,7 +447,7 @@ class PrincipalResolution:
     def __init__(
         self,
         app: Any,
-        verifier: JwtTokenVerifier | None = None,
+        verifier: CredentialSource | None = None,
         *,
         resolve_projection: bool = True,
     ) -> None:
@@ -519,7 +520,7 @@ class PrincipalResolution:
             return memo
         if self._verifier is None:
             return None
-        record = await self._verifier.verify_token(token)
+        record = await resolve_for_sdk(self._verifier, token)
         if record is None:
             return None
         # A local memo for this layer's own use only; the SDK's verification

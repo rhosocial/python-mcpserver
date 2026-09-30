@@ -58,6 +58,7 @@ from .app import (
     serve,
 )
 from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from .credentials import CredentialSource
 from .errors import (
     ConfigurationError,
     JwkUnavailable,
@@ -68,6 +69,7 @@ from .errors import (
     Unauthenticated,
 )
 from .identity import (
+    SELF_ISSUED,
     Principal,
     current_central_user_id,
     current_principal,
@@ -111,7 +113,7 @@ from .orm import (
     registered_projection,
 )
 from .scopes import NO_SCOPE, ScopePolicy, ScopeSet
-from .verifier import JwtTokenVerifier
+from .verifier import JwtTokenVerifier, resolve_for_sdk
 
 __version__ = "0.1.0.dev1"
 
@@ -136,8 +138,11 @@ __all__ = [
     "Jwk",
     "JwkSet",
     "JwtTokenVerifier",
+    "resolve_for_sdk",
     # identity
     "Principal",
+    "SELF_ISSUED",
+    "CredentialSource",
     "current_principal",
     "current_principal_id",
     "ensure_principal_id",

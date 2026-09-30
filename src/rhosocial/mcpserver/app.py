@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .config import HEALTH_PATH, MCP_PATH, PRM_PATH, ResourceServerConfig
+from .credentials import CredentialSource
 from .errors import ConfigurationError
 from .middleware import (
     MAX_BODY_BYTES,
@@ -55,7 +56,6 @@ from .middleware import (
     ResourceEndpoints,
     ScopeEnforcement,
 )
-from .verifier import JwtTokenVerifier
 
 __all__ = [
     "build_asgi_app",
@@ -84,7 +84,7 @@ def build_asgi_app(
     app: Any,
     *,
     config: ResourceServerConfig,
-    verifier: JwtTokenVerifier,
+    verifier: CredentialSource,
     health: Callable[[], Awaitable[bool]] | None = None,
     mcp_path: str = MCP_PATH,
     max_body_bytes: int = MAX_BODY_BYTES,
@@ -167,7 +167,7 @@ def build_mcp_app(
     server: Any,
     *,
     config: ResourceServerConfig,
-    verifier: JwtTokenVerifier,
+    verifier: CredentialSource,
     mcp_path: str = MCP_PATH,
     json_response: bool = False,
     resolve_projection: bool = True,
