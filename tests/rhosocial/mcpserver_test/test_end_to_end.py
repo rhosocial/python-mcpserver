@@ -149,12 +149,14 @@ def no_projection():
     """
     from rhosocial.mcpserver.orm import principal as module
 
-    saved = module._projection_model
-    module._projection_model = None
+    # The holder is a one-slot list, so "unregister" is emptying it and
+    # restoring what was there. A module name would need a `global` to do this.
+    saved = list(module._projection)
+    module._projection.clear()
     try:
         yield
     finally:
-        module._projection_model = saved
+        module._projection[:] = saved
 
 
 def client_for(app: Any, token: str | None = None) -> httpx2.AsyncClient:
