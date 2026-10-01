@@ -96,7 +96,11 @@ _provisioning: ContextVar[tuple[str, ...]] = ContextVar(
 #: exactly one service, so there is exactly one; a module-level slot is what
 #: makes the ownership predicate work without threading a config object through
 #: every model, the query class and the save hook.
-_projection_model: type | None = None
+#: A one-slot holder rather than a module name.  A `global` would be needed to
+#: rebind the name, and the fact being tracked here -- "which model is *this*
+#: process's projection table" -- is better held in one visible place than in a
+#: variable whose value depends on which code path assigned it last.
+_projection: list[type] = []
 
 
 def register_projection(model: Any) -> Any:
@@ -107,14 +111,14 @@ def register_projection(model: Any) -> Any:
     silently letting the last registration win would mean two models' rows were
     keyed by whichever was imported last.
     """
-    global _projection_model
-    if _projection_model is not None and _projection_model is not model:
+    if _projection and _projection[0] is not model:
         raise ConfigurationError(
-            f"{_projection_model.__name__} is already registered as this "
+            f"{_projection[0].__name__} is already registered as this "
             f"process's projection table; refusing to replace it with "
             f"{model.__name__}"
         )
-    _projection_model = model
+    if not _projection:
+        _projection.append(model)
     return model
 
 
@@ -125,13 +129,13 @@ def registered_projection() -> Any:
     anonymous ``NoneType is not callable`` at the first request sends the reader
     to the wrong file entirely.
     """
-    if _projection_model is None:
+    if not _projection:
         raise ConfigurationError(
             "no projection model is registered. Call "
             "YourPrincipalModel.register_as_projection() once, at import time — "
             "without it the ownership predicate has no table to resolve against."
         )
-    return _projection_model
+    return _projection[0]
 
 
 def current_principal_id() -> int:
