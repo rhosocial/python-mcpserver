@@ -95,13 +95,15 @@ def _type_support(dialect: SQLDialectBase) -> DataTypeSupport:
 def _timestamp_type(dialect: SQLDialectBase) -> str:
     """The dialect's spelling for a timestamp with a time zone.
 
-    SQL Server calls it ``DATETIMEOFFSET`` and parses the SQL-standard form as
-    an opaque ``CustomType``; every other supported backend accepts
-    ``TIMESTAMP WITH TIME ZONE``.  The spelling is chosen by asking the type
-    parser, not by naming a backend.
+    SQL Server parses the SQL-standard form as an opaque ``CustomType``; its
+    own ``DATETIMEOFFSET`` is correct but pyodbc/aioodbc cannot fetch it
+    (``ODBC SQL type -155 is not yet supported``), so ``DATETIME2`` is used
+    there.  Every other supported backend accepts ``TIMESTAMP WITH TIME
+    ZONE``.  The spelling is chosen by asking the type parser, not by naming a
+    backend.
     """
     support = _type_support(dialect)
-    for spelling in ("TIMESTAMP WITH TIME ZONE", "DATETIMEOFFSET"):
+    for spelling in ("TIMESTAMP WITH TIME ZONE", "DATETIME2", "DATETIMEOFFSET"):
         if type(support.parse_type(spelling)).__name__ != "CustomType":
             return spelling
     raise UnsupportedFeatureError(
