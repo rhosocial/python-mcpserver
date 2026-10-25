@@ -278,6 +278,12 @@ def column(
                 ),
             )
         )
+    # DEFAULT before NOT NULL: Oracle's grammar puts the default before inline
+    # constraints, and the other backends accept this order too.
+    if default is not None:
+        constraints.append(
+            ColumnConstraint(dialect, branch=ColumnDefaultConstraint(dialect, default))
+        )
     if not_null:
         constraints.append(
             ColumnConstraint(dialect, branch=ColumnNotNullConstraint(dialect))
@@ -285,10 +291,6 @@ def column(
     if unique:
         constraints.append(
             ColumnConstraint(dialect, branch=ColumnUniqueConstraint(dialect))
-        )
-    if default is not None:
-        constraints.append(
-            ColumnConstraint(dialect, branch=ColumnDefaultConstraint(dialect, default))
         )
     if references is not None:
         table, target = references
