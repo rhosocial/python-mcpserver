@@ -277,8 +277,10 @@ jobs:
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
       - name: Create the test database
         run: |
+          # -C trusts the container's self-signed certificate; ODBC Driver 18
+          # encrypts by default and refuses it otherwise.
           docker exec ${{ job.services.sqlserver.id }} \
-            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -C \
             -Q "IF DB_ID('test_db') IS NULL CREATE DATABASE test_db"
       - name: Install
         env:
@@ -287,7 +289,7 @@ jobs:
           python -m pip install -U pip
           python -m pip install "$CORE_SOURCE"
           python -m pip install "git+https://github.com/rhosocial/python-activerecord-sqlserver.git@fix/column-constraint-gates"
-          python -m pip install pyodbc
+          python -m pip install pyodbc aioodbc
           python -m pip install -e ".[dev]"
       - name: Test the ORM against SQL Server
         env:
