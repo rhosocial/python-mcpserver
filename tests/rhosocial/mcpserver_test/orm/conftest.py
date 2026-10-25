@@ -8,12 +8,17 @@ reads them as another.
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import os
+import pathlib
+import re
+import sys
+from dataclasses import dataclass
 from datetime import datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
-from rhosocial.activerecord.backend.impl.sqlite.backend.async_backend import AsyncSQLiteBackend
-from rhosocial.activerecord.backend.impl.sqlite.config import SQLiteConnectionConfig
 from rhosocial.activerecord.base.field_proxy import FieldProxy
 from rhosocial.activerecord.model import AsyncActiveRecord
 
@@ -36,6 +41,18 @@ from rhosocial.mcpserver.orm.ddl import PRINCIPALS  # noqa: E402
 
 #: The test's own table, prefixed so it cannot be mistaken for a service table.
 NOTES = "t_notes"
+
+
+def pytest_asyncio_loop_factories(config, item):
+    """Use a selector loop on Windows, as the service's CLI does.
+
+    psycopg refuses the ProactorEventLoop, and the server scenarios are the
+    reason this hook exists; SQLite is happy either way.
+    """
+    del config, item
+    if sys.platform == "win32":
+        return {"selector": asyncio.SelectorEventLoop}
+    return {"default": asyncio.new_event_loop}
 
 __table_name__ = NOTES
 __query_class__ = PrincipalScopedQuery
@@ -84,24 +101,120 @@ def principal_for(central_user_id: str) -> Principal:
     return Principal(central_user_id=central_user_id, client_id="test-client")
 
 
-@pytest.fixture
-def config(tmp_path):
-    return SQLiteConnectionConfig(database=str(tmp_path / "mcpserver_test.db"))
+@dataclass(frozen=True)
+class _Backend:
+    """The backend under test: its name, class and connection config."""
+
+    name: str
+    backend_cls: type
+    config: Any
 
 
-@pytest.fixture
-async def backend(config):
-    backend = AsyncSQLiteBackend(config)
+#: ``${NAME}`` / ``${NAME:-default}`` in the scenario file.  Kept tiny on
+#: purpose: the file is read by tests, not by a template engine.
+_EXPAND = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _expand(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    def substitute(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        if name in os.environ:
+            return os.environ[name]
+        if default is not None:
+            return default
+        raise RuntimeError(f"scenario variable {name} is not set and has no default")
+
+    return _EXPAND.sub(substitute, value)
+
+
+def _import_fqn(qualified_name: str) -> Any:
+    """Import ``module.Class`` and return the attribute."""
+    module_name, _, attribute = qualified_name.rpartition(".")
+    if not module_name or not attribute:
+        raise RuntimeError(f"{qualified_name!r} is not a fully qualified name")
+    return getattr(importlib.import_module(module_name), attribute)
+
+
+def _load_scenario(name: str) -> dict[str, Any]:
+    import yaml
+
+    path = pathlib.Path(__file__).resolve().parents[3] / "config" / "scenarios.yaml"
+    with path.open(encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
     try:
+        scenario = document["scenarios"][name]
+    except KeyError:
+        available = ", ".join(sorted(document.get("scenarios", {})))
+        raise RuntimeError(f"unknown scenario {name!r}; available: {available}") from None
+    return {key: _expand(value) for key, value in scenario.items()}
+
+
+def _select_backend(tmp_path) -> _Backend:
+    """Build the backend named by ``MCP_TEST_SCENARIO`` (default: sqlite).
+
+    Every scenario names two classes: ``backend`` and ``connection_config``,
+    both fully qualified.  The remaining keys are passed to the config
+    constructor unchanged, so adding a backend needs no code here.
+    """
+    name = os.getenv("MCP_TEST_SCENARIO", "sqlite")
+    scenario = _load_scenario(name)
+    backend_cls = _import_fqn(str(scenario.pop("backend")))
+    config_cls = _import_fqn(str(scenario.pop("connection_config")))
+
+    if backend_cls.__name__ == "AsyncSQLiteBackend" and not scenario.get("database"):
+        scenario["database"] = str(tmp_path / "mcpserver_test.db")
+    if "port" in scenario:
+        scenario["port"] = int(scenario["port"])
+
+    return _Backend(name, backend_cls, config_cls(**scenario))
+
+
+@pytest.fixture
+def backend_spec(tmp_path) -> _Backend:
+    return _select_backend(tmp_path)
+
+
+@pytest.fixture
+async def backend(backend_spec):
+    backend = backend_spec.backend_cls(connection_config=backend_spec.config)
+    try:
+        await backend.connect()
+        await backend.introspect_and_adapt()
         yield backend
     finally:
         await backend.disconnect()
 
 
 @pytest.fixture
-async def tables(backend, config):
-    """Create the projection table and the note table."""
+async def tables(backend, backend_spec):
+    """Create the projection table and the note table.
+
+    Server backends share one database across tests, so the tables are dropped
+    first: a second test would otherwise collide on an index that the backend
+    cannot create with ``IF NOT EXISTS``.  The first drop on Oracle raises
+    ``ORA-00942`` because that dialect has no ``IF EXISTS``; it is ignored.
+    """
     dialect = backend.dialect
+    from rhosocial.activerecord.backend.expression.objects import Table as TableNode
+    from rhosocial.activerecord.backend.expression.statements.ddl_table import (
+        DropTableStatement,
+    )
+
+    for table_name in (NOTES, PRINCIPALS):
+        try:
+            await backend.execute(
+                *DropTableStatement(
+                    dialect,
+                    table=TableNode(dialect, table_name),
+                    if_exists=True,
+                ).to_sql()
+            )
+        except Exception:  # noqa: BLE001 - the first drop on Oracle has no IF EXISTS
+            pass
+
     for expression in (
         create_projection_table(dialect),
         *projection_indexes(dialect),
@@ -123,8 +236,8 @@ async def tables(backend, config):
     # connection keeps the interpreter alive indefinitely.  pytest reports
     # "187 passed" and the job hangs until it is cancelled, which is how this
     # cost 25 minutes of CI before it was found.
-    await Note.configure(config, type(backend))
-    await NotePrincipal.configure(config, type(backend))
+    await Note.configure(backend_spec.config, type(backend))
+    await NotePrincipal.configure(backend_spec.config, type(backend))
     # The ownership hooks resolve through this; a process serves one service, so
     # there is exactly one projection table.
     NotePrincipal.register_as_projection()
@@ -139,15 +252,15 @@ def _create_notes_table(dialect, table: str):
         CreateTableStatement,
     )
 
-    from rhosocial.mcpserver.orm.ddl import column, serial_type_for
+    from rhosocial.mcpserver.orm.ddl import column
 
     return CreateTableStatement(
         dialect=dialect,
         table=TableNode(dialect, table),
         columns=[
-            column(dialect, "id", serial_type_for(dialect), primary_key=True),
+            column(dialect, "id", "INTEGER", primary_key=True),
             column(dialect, "principal_id", "INTEGER", not_null=True),
-            column(dialect, "title", "TEXT", not_null=True),
+            column(dialect, "title", "VARCHAR(255)", not_null=True),
         ],
         if_not_exists=True,
     )
@@ -160,12 +273,13 @@ def _create_notes_index(dialect):
         CreateIndexStatement,
     )
 
+    # The notes table is dropped and rebuilt for every test, so the index
+    # cannot already exist; MySQL and SQL Server reject IF NOT EXISTS anyway.
     return CreateIndexStatement(
         dialect,
         index=IndexNode(dialect, f"idx_{NOTES}_principal_id"),
         table=TableNode(dialect, NOTES),
         columns=["principal_id"],
-        if_not_exists=True,
     )
 
 

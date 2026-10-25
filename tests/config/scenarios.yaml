@@ -1,0 +1,69 @@
+# tests/config/scenarios.yaml
+#
+# Backend scenarios for the ORM tests.  MCP_TEST_SCENARIO selects one
+# (default: sqlite).  Each entry names two fully qualified classes and passes
+# the remaining keys to the connection config constructor unchanged.
+#
+# ${NAME} and ${NAME:-default} expand from the environment, so a CI job can
+# point a scenario at its service container without editing this file.
+
+scenarios:
+  sqlite:
+    backend: rhosocial.activerecord.backend.impl.sqlite.backend.async_backend.AsyncSQLiteBackend
+    connection_config: rhosocial.activerecord.backend.impl.sqlite.config.SQLiteConnectionConfig
+    database: "${MCP_TEST_SQLITE_PATH:-}"
+
+  postgres_18:
+    backend: rhosocial.activerecord.backend.impl.postgres.backend.AsyncPostgresBackend
+    connection_config: rhosocial.activerecord.backend.impl.postgres.config.PostgresConnectionConfig
+    host: "${MCP_TEST_DB_HOST:-db-dev-1-n.rho.im}"
+    port: "${MCP_TEST_DB_PORT:-16689}"
+    database: "${MCP_TEST_DB_NAME:-github_ci_tracker}"
+    username: "${MCP_TEST_DB_USER:-root}"
+    password: "${MCP_TEST_DB_PASSWORD:-password}"
+    sslmode: "${MCP_TEST_DB_SSLMODE:-prefer}"
+
+  mysql_97:
+    backend: rhosocial.activerecord.backend.impl.mysql.backend.AsyncMySQLBackend
+    connection_config: rhosocial.activerecord.backend.impl.mysql.config.MySQLConnectionConfig
+    host: "${MCP_TEST_DB_HOST:-db-dev-1-n.rho.im}"
+    port: "${MCP_TEST_DB_PORT:-14686}"
+    database: "${MCP_TEST_DB_NAME:-test_db}"
+    username: "${MCP_TEST_DB_USER:-root}"
+    password: "${MCP_TEST_DB_PASSWORD:-password}"
+    charset: utf8mb4
+    ssl_disabled: false
+
+  mariadb_130:
+    backend: rhosocial.activerecord.backend.impl.mariadb.backend.AsyncMariaDBBackend
+    connection_config: rhosocial.activerecord.backend.impl.mariadb.config.MariaDBConnectionConfig
+    host: "${MCP_TEST_DB_HOST:-127.0.0.1}"
+    port: "${MCP_TEST_DB_PORT:-3306}"
+    database: "${MCP_TEST_DB_NAME:-test_db}"
+    username: "${MCP_TEST_DB_USER:-root}"
+    password: "${MCP_TEST_DB_PASSWORD:-password}"
+    charset: utf8mb4
+
+  sqlserver_2022:
+    backend: rhosocial.activerecord.backend.impl.sqlserver.backend.AsyncSQLServerBackend
+    connection_config: rhosocial.activerecord.backend.impl.sqlserver.config.SQLServerConnectionConfig
+    host: "${MCP_TEST_DB_HOST:-127.0.0.1}"
+    port: "${MCP_TEST_DB_PORT:-1433}"
+    database: "${MCP_TEST_DB_NAME:-test_db}"
+    username: "${MCP_TEST_DB_USER:-sa}"
+    password: "${MCP_TEST_DB_PASSWORD:-Password123!}"
+    driver: "${MCP_TEST_DB_DRIVER:-ODBC Driver 18 for SQL Server}"
+    encrypt: false
+    trust_server_certificate: true
+    autocommit: true
+
+  oracle_free:
+    backend: rhosocial.activerecord.backend.impl.oracle.backend.AsyncOracleBackend
+    connection_config: rhosocial.activerecord.backend.impl.oracle.config.OracleConnectionConfig
+    host: "${MCP_TEST_DB_HOST:-127.0.0.1}"
+    port: "${MCP_TEST_DB_PORT:-1521}"
+    service_name: "${MCP_TEST_DB_SERVICE_NAME:-FREEPDB1}"
+    database: FREEPDB1
+    username: "${MCP_TEST_DB_USER:-system}"
+    password: "${MCP_TEST_DB_PASSWORD:-password}"
+    encoding: AL32UTF8

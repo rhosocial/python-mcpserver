@@ -19,6 +19,15 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from rhosocial.activerecord.backend.dialect.exceptions import UnsupportedFeatureError
+from rhosocial.activerecord.backend.dialect.protocols.ddl.auto_increment import (
+    AutoIncrementColumnSupport,
+)
+from rhosocial.activerecord.backend.dialect.protocols.ddl.identity_column import (
+    IdentityColumnSupport,
+)
+from rhosocial.activerecord.backend.dialect.protocols.ddl.index.create_index import (
+    CreateIndexSupport,
+)
 from rhosocial.activerecord.backend.dialect.protocols.query.data_type import (
     DataTypeSupport,
 )
@@ -56,7 +65,6 @@ __all__ = [
     "drop_projection_table",
     "create_projection_schema",
     "drop_projection_schema",
-    "serial_type_for",
     "PRINCIPALS",
     "TIMESTAMP",
 ]
@@ -84,28 +92,50 @@ def _type_support(dialect: SQLDialectBase) -> DataTypeSupport:
     return dialect
 
 
-def serial_type_for(dialect: SQLDialectBase) -> str:
-    """The dialect's auto-increment primary-key column type.
+def _timestamp_type(dialect: SQLDialectBase) -> str:
+    """The dialect's spelling for a timestamp with a time zone.
 
-    ``SQLDialectBase`` is the public contract; ``parse_type`` is the optional
-    :class:`DataTypeSupport` capability that concrete dialects add through
-    their type mixins.  ``_type_support`` checks it before use.
-
-    Not a constant, and the reason is a quiet one.  ``SERIAL`` is PostgreSQL's
-    spelling.  SQLite accepts *any* type name in a column definition, so a
-    ``SERIAL`` primary key there is created as an ordinary column named
-    ``SERIAL`` — **not** an alias for the rowid.  ``INSERT`` then stores a
-    literal ``NULL`` for it, and every row comes back with a null id, which
-    surfaces much later as an opaque ``int() argument must be … not 'NoneType'``
-    in provisioning rather than as anything to do with types.
-
-    So the type is resolved from the dialect's own affinity rules: if it does
-    not know ``SERIAL``, it gets the plain integer that its rowid alias needs.
+    SQL Server calls it ``DATETIMEOFFSET`` and parses the SQL-standard form as
+    an opaque ``CustomType``; every other supported backend accepts
+    ``TIMESTAMP WITH TIME ZONE``.  The spelling is chosen by asking the type
+    parser, not by naming a backend.
     """
-    parsed = _type_support(dialect).parse_type("SERIAL")
-    if type(parsed).__name__ == "CustomType":
-        return "INTEGER"
-    return "SERIAL"
+    support = _type_support(dialect)
+    for spelling in ("TIMESTAMP WITH TIME ZONE", "DATETIMEOFFSET"):
+        if type(support.parse_type(spelling)).__name__ != "CustomType":
+            return spelling
+    raise UnsupportedFeatureError(
+        type(dialect).__name__,
+        "timestamp with time zone",
+        "no supported spelling parses as a timestamp type",
+    )
+
+
+def _index_if_not_exists(dialect: SQLDialectBase) -> bool:
+    """Whether the dialect accepts ``CREATE INDEX IF NOT EXISTS``.
+
+    MySQL, SQL Server and Oracle reject the modifier.  The projection schema
+    creates its indexes only after its tables, so a fresh table makes the
+    modifier unnecessary there; callers re-running against an existing table
+    must drop it first.
+    """
+    return isinstance(dialect, CreateIndexSupport) and dialect.supports_index_if_not_exists()
+
+
+def _generates_primary_key(dialect: SQLDialectBase) -> bool:
+    """Whether the dialect needs an explicit generated-key clause.
+
+    SQLite needs none: ``INTEGER PRIMARY KEY`` *is* the rowid alias.  Every
+    other supported backend expresses generation through a column clause, and
+    the capability probes are how the dialect says which mechanism it has:
+    ``AUTO_INCREMENT`` (MySQL, MariaDB) or SQL-standard ``GENERATED ... AS
+    IDENTITY`` (PostgreSQL, SQL Server, Oracle).
+    """
+    if isinstance(dialect, AutoIncrementColumnSupport) and dialect.supports_auto_increment_column():
+        return True
+    if isinstance(dialect, IdentityColumnSupport) and dialect.supports_identity_column():
+        return True
+    return False
 
 #: ``TIMESTAMP WITH TIME ZONE``.  Chosen over a naive timestamp because a
 #: projection's ``provisioned_at`` is compared against an AS clock and against
@@ -128,15 +158,15 @@ def create_projection_table(
         dialect=dialect,
         table=TableNode(dialect, PRINCIPALS),
         columns=[
-            column(dialect, ID, serial_type_for(dialect), primary_key=True),
-            # TEXT, not VARCHAR(n): a central id is an opaque string whose
-            # length is the authorization server's business.  A column too
-            # short to hold it truncates, and a truncated id that still matches
-            # an existing one merges two users' data.
-            column(dialect, CENTRAL_USER_ID, "TEXT", not_null=True),
-            column(dialect, STATUS, "TEXT", not_null=True, default="active"),
-            column(dialect, PROVIDED_BY, "TEXT"),
-            column(dialect, PROVISIONED_AT, TIMESTAMP),
+            column(dialect, ID, "INTEGER", primary_key=True),
+            # VARCHAR, not TEXT: MySQL and MariaDB refuse to index a TEXT
+            # column without a prefix length, and this column carries the
+            # unique index that makes concurrent provisioning collapse onto
+            # one row.  255 is the portable upper bound for that index.
+            column(dialect, CENTRAL_USER_ID, "VARCHAR(255)", not_null=True),
+            column(dialect, STATUS, "VARCHAR(32)", not_null=True, default="active"),
+            column(dialect, PROVIDED_BY, "VARCHAR(255)"),
+            column(dialect, PROVISIONED_AT, _timestamp_type(dialect)),
             *extra_columns,
         ],
         if_not_exists=True,
@@ -161,6 +191,7 @@ def projection_indexes(
     # would produce `idx_t_t_principals_...`, which is a valid identifier and so
     # would be created without complaint.
     table = TableNode(dialect, PRINCIPALS)
+    if_not_exists = _index_if_not_exists(dialect)
     return (
         CreateIndexStatement(
             dialect,
@@ -168,14 +199,14 @@ def projection_indexes(
             table=table,
             columns=[CENTRAL_USER_ID],
             unique=True,
-            if_not_exists=True,
+            if_not_exists=if_not_exists,
         ),
         CreateIndexStatement(
             dialect,
             index=IndexNode(dialect, f"idx_{PRINCIPALS}_STATUS"),
             table=table,
             columns=[STATUS],
-            if_not_exists=True,
+            if_not_exists=if_not_exists,
         ),
     )
 
@@ -195,6 +226,25 @@ def drop_projection_table(
     )
 
 
+def _sql_type(dialect: SQLDialectBase, raw: str) -> str:
+    """A spelling of *raw* the dialect can parse.
+
+    Only ``TEXT`` is remapped: Oracle has no such type, and the closest
+    bounded string (``VARCHAR(4000)``) is also what an index needs.  Any other
+    spelling the parser does not recognise is passed through unchanged -- it
+    may be a dialect-specific type the caller deliberately asked for, and
+    guessing a replacement would be worse than letting the server decide.
+    """
+    support = _type_support(dialect)
+    if type(support.parse_type(raw)).__name__ != "CustomType":
+        return raw
+    if raw.upper() == "TEXT":
+        for alternative in ("VARCHAR(4000)", "VARCHAR2(4000)"):
+            if type(support.parse_type(alternative)).__name__ != "CustomType":
+                return alternative
+    return raw
+
+
 def column(
     dialect: SQLDialectBase,
     name: str,
@@ -208,19 +258,24 @@ def column(
 ) -> ColumnDefinition:
     """Build one ``ColumnDefinition``.
 
-    Constraint names are left to the server for everything except the primary
-    key, where ``pk_<table>`` is conventional and harmless.  Naming a foreign
-    key ``fk_<column>`` on every service would collide the moment two services
-    shared a schema — the asymmetry between index and constraint names is the
-    whole reason the prefix rules differ.
+    Constraint names are left to the server.  MariaDB refuses a ``CONSTRAINT
+    <name>`` prefix on a column constraint (it accepts one only before
+    ``REFERENCES``), and a per-column name buys nothing here, so the portable
+    form omits it everywhere.
+
+    A primary key is generated unless the dialect says otherwise:
+    :func:`_generates_primary_key` is the probe, and SQLite's rowid alias is
+    the one case that answers no.
     """
     constraints: list[ColumnConstraint] = []
     if primary_key:
         constraints.append(
             ColumnConstraint(
                 dialect,
-                branch=ColumnPrimaryKeyConstraint(dialect),
-                name=f"pk_{name}",
+                branch=ColumnPrimaryKeyConstraint(
+                    dialect,
+                    is_auto_increment=_generates_primary_key(dialect),
+                ),
             )
         )
     if not_null:
@@ -249,7 +304,7 @@ def column(
     return ColumnDefinition(
         dialect,
         name,
-        _type_support(dialect).parse_type(sql_type),
+        _type_support(dialect).parse_type(_sql_type(dialect, sql_type)),
         constraints=constraints or None,
     )
 

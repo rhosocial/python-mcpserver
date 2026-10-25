@@ -36,9 +36,10 @@ so there is **no** `src/rhosocial/__init__.py`). Tests live in
 8. **Table names have exactly one source** (`tables.TableNamespace`), including
    index names — PostgreSQL puts every index in one namespace. Pass the *bare*
    table name to `index()`; it prefixes for you.
-9. **A resolver must never guess a type from a Postgres spelling.** `SERIAL` is
-   a literal `NULL` column on SQLite. Ask the dialect — see
-   `orm/ddl.serial_type_for`.
+9. **Ask the dialect for generated keys, never for a spelling.** SQLite's
+   `INTEGER PRIMARY KEY` is the rowid alias; other backends need
+   `AUTO_INCREMENT` or `IDENTITY`. Probe the capability in
+   `orm/ddl._generates_primary_key` rather than guessing from a type name.
 10. **Never let an unverified claim reach a user as a fact.** The CLI's
     `--raw` output is labelled `UNVERIFIED`; the metadata document is not.
 

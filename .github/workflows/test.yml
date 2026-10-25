@@ -78,10 +78,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install
@@ -117,3 +117,226 @@ jobs:
         # cannot interrupt — an atexit handler, say.
         run: python -m pytest tests/ -v
         timeout-minutes: 10
+
+  postgres:
+    needs: preflight
+    name: PostgreSQL 18 / Python 3.15
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U root -d test_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+      - name: Install
+        env:
+          CORE_SOURCE: ${{ env.CORE_SOURCE }}
+        run: |
+          python -m pip install -U pip
+          python -m pip install "$CORE_SOURCE"
+          python -m pip install "git+https://github.com/rhosocial/python-activerecord-postgres.git@fix/column-constraint-gates"
+          python -m pip install "psycopg[binary]"
+          python -m pip install -e ".[dev]"
+      - name: Test the ORM against PostgreSQL
+        env:
+          MCP_TEST_SCENARIO: postgres_18
+          MCP_TEST_DB_HOST: 127.0.0.1
+          MCP_TEST_DB_PORT: "5432"
+          MCP_TEST_DB_NAME: test_db
+          MCP_TEST_DB_USER: root
+          MCP_TEST_DB_PASSWORD: password
+        run: python -m pytest tests/rhosocial/mcpserver_test/orm -v
+
+  mysql:
+    needs: preflight
+    name: MySQL 9.7 / Python 3.11
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:9.7
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: test_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -u root -ppassword"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        env:
+          CORE_SOURCE: ${{ env.CORE_SOURCE }}
+        run: |
+          python -m pip install -U pip
+          python -m pip install "$CORE_SOURCE"
+          python -m pip install "git+https://github.com/rhosocial/python-activerecord-mysql.git@fix/column-constraint-gates"
+          python -m pip install mysql-connector-python
+          python -m pip install -e ".[dev]"
+      - name: Test the ORM against MySQL
+        env:
+          MCP_TEST_SCENARIO: mysql_97
+          MCP_TEST_DB_HOST: 127.0.0.1
+          MCP_TEST_DB_PORT: "3306"
+          MCP_TEST_DB_NAME: test_db
+          MCP_TEST_DB_USER: root
+          MCP_TEST_DB_PASSWORD: password
+        run: python -m pytest tests/rhosocial/mcpserver_test/orm -v
+
+  mariadb:
+    needs: preflight
+    name: MariaDB 13.0 / Python 3.13
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mariadb:
+        image: mariadb:13.0
+        env:
+          MARIADB_ROOT_PASSWORD: password
+          MARIADB_DATABASE: test_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mariadb-admin ping -h 127.0.0.1 -u root -ppassword"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        env:
+          CORE_SOURCE: ${{ env.CORE_SOURCE }}
+        run: |
+          python -m pip install -U pip
+          python -m pip install "$CORE_SOURCE"
+          python -m pip install "git+https://github.com/rhosocial/python-activerecord-mariadb.git@fix/column-constraint-gates"
+          python -m pip install mariadb
+          python -m pip install -e ".[dev]"
+      - name: Test the ORM against MariaDB
+        env:
+          MCP_TEST_SCENARIO: mariadb_130
+          MCP_TEST_DB_HOST: 127.0.0.1
+          MCP_TEST_DB_PORT: "3306"
+          MCP_TEST_DB_NAME: test_db
+          MCP_TEST_DB_USER: root
+          MCP_TEST_DB_PASSWORD: password
+        run: python -m pytest tests/rhosocial/mcpserver_test/orm -v
+
+  sqlserver:
+    needs: preflight
+    name: SQL Server 2022 / Python 3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Password123!
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' -Q 'SELECT 1' -N -C || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the ODBC driver
+        run: |
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list \
+            | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+      - name: Create the test database
+        run: |
+          docker exec ${{ job.services.sqlserver.id }} \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Password123!' \
+            -Q "IF DB_ID('test_db') IS NULL CREATE DATABASE test_db"
+      - name: Install
+        env:
+          CORE_SOURCE: ${{ env.CORE_SOURCE }}
+        run: |
+          python -m pip install -U pip
+          python -m pip install "$CORE_SOURCE"
+          python -m pip install "git+https://github.com/rhosocial/python-activerecord-sqlserver.git@fix/column-constraint-gates"
+          python -m pip install pyodbc
+          python -m pip install -e ".[dev]"
+      - name: Test the ORM against SQL Server
+        env:
+          MCP_TEST_SCENARIO: sqlserver_2022
+          MCP_TEST_DB_HOST: 127.0.0.1
+          MCP_TEST_DB_PORT: "1433"
+          MCP_TEST_DB_NAME: test_db
+          MCP_TEST_DB_USER: sa
+          MCP_TEST_DB_PASSWORD: Password123!
+        run: python -m pytest tests/rhosocial/mcpserver_test/orm -v
+
+  oracle:
+    needs: preflight
+    name: Oracle Free 23 / Python 3.14
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      oracle:
+        image: gvenzl/oracle-free:23-slim
+        env:
+          ORACLE_PASSWORD: password
+          ORACLE_CHARACTERSET: AL32UTF8
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd "healthcheck.sh"
+          --health-interval 30s
+          --health-timeout 60s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install
+        env:
+          CORE_SOURCE: ${{ env.CORE_SOURCE }}
+        run: |
+          python -m pip install -U pip
+          python -m pip install "$CORE_SOURCE"
+          python -m pip install "git+https://github.com/rhosocial/python-activerecord-oracle.git@fix/column-constraint-gates"
+          python -m pip install oracledb
+          python -m pip install -e ".[dev]"
+      - name: Test the ORM against Oracle
+        env:
+          MCP_TEST_SCENARIO: oracle_free
+          MCP_TEST_DB_HOST: 127.0.0.1
+          MCP_TEST_DB_PORT: "1521"
+          MCP_TEST_DB_SERVICE_NAME: FREEPDB1
+          MCP_TEST_DB_USER: system
+          MCP_TEST_DB_PASSWORD: password
+        run: python -m pytest tests/rhosocial/mcpserver_test/orm -v

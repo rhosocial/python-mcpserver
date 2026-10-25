@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rhosocial-mcpserver"
-version = "0.1.0.dev1"
+version = "1.0.0.dev1"
 description = "MCP Resource Server foundation for rhosocial-activerecord services: local JWT/JWKS verification, per-tool scope enforcement, principal projection"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -68,6 +68,8 @@ dev = [
     # tests/…/orm/conftest.py: the failure mode is "187 passed" followed by an
     # interpreter that never exits, which reports nothing at all.
     "pytest-timeout>=2.3",
+    # The ORM test scenarios live in tests/config/scenarios.yaml.
+    "pyyaml>=6.0",
     "httpx>=0.27",
     "ruff>=0.1.0",
     "mypy>=1.10.0",

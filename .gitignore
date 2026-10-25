@@ -180,8 +180,10 @@ cython_debug/
 # Apple macOS
 **/.DS_Store
 
-# Local test configuration (connection profiles, credentials, etc.)
-tests/config/
+# Local test configuration (connection profiles, credentials, etc.).
+# scenarios.yaml is checked in: it contains only environment placeholders.
+tests/config/*
+!tests/config/scenarios.yaml
 
 # Examples
 examples/**
