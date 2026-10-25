@@ -51,18 +51,18 @@ from rhosocial.mcpserver import (
     NO_SCOPE,
     JwtTokenVerifier,
     JwksCache,
+    OAuthConfig,
     PrincipalMixin,
     PrincipalOwnedMixin,
     PrincipalScopedQuery,
-    ResourceServerConfig,
+    ServiceConfig,
     auth_settings,
     build_mcp_app,
     serve,
 )
 
-CONFIG = ResourceServerConfig(
+CONFIG = ServiceConfig(
     resource="https://calendar.example.com/mcp",   # RFC 8707 resource id == aud
-    issuer="https://auth.example.com",
     scopes=["schedules:read", "schedules:write"],
     tool_scopes={
         "whoami": NO_SCOPE,              # reports the caller, discloses nothing
@@ -70,10 +70,11 @@ CONFIG = ResourceServerConfig(
         "create_schedule": "schedules:write",
     },
 )
+OAUTH = OAuthConfig(issuer="https://auth.example.com")
 
 verifier = JwtTokenVerifier(
-    JwksCache(CONFIG.jwks_uri),
-    issuer=CONFIG.issuer,
+    JwksCache(OAUTH.jwks_uri),
+    issuer=OAUTH.issuer,
     resource=CONFIG.resource,
     scope_set=CONFIG.policy.vocabulary,
 )
@@ -87,7 +88,7 @@ class ContactPrincipal(AsyncActiveRecord, PrincipalMixin):
     __pk_auto_generated__ = True
 
     id: Optional[int] = None
-    central_user_id: str = ""          # the AS's `sub`; opaque, so TEXT
+    central_user_id: str = ""          # the AS's `sub`; bounded so it can be indexed
     status: str = PrincipalMixin.STATUS_ACTIVE
     provided_by: Optional[str] = None
     provisioned_at: Optional[datetime] = None
@@ -116,15 +117,16 @@ async def get_contact(name: str) -> str:
     return contact.name
 ```
 
-Wiring — the order is load-bearing, and `rhosocial/mcpserver/app.py` says why
+Wiring — the order is load-bearing, and `rhosocial/mcpserver/mcp/app.py` says why
 each layer is where it is:
 
 ```python
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 server = MCPServer(
     name="notes",
-    auth=auth_settings(CONFIG),      # required_scopes=[] on purpose
+    auth=auth_settings(OAUTH.issuer, CONFIG.resource),  # required_scopes=[] on purpose
     token_verifier=verifier,        # omit either and every tool is public
 )
 
@@ -132,7 +134,6 @@ app = build_mcp_app(
     server,
     config=CONFIG,
     verifier=verifier,
-    health=probe,                     # should touch the database
     transport_security=TransportSecuritySettings(
         # Only auto-disabled for a loopback bind; behind a proxy that rewrites
         # Host, an unset allowlist refuses every request as a rebinding attempt.
@@ -141,6 +142,21 @@ app = build_mcp_app(
     ),
 )
 serve(app)
+```
+
+`build_mcp_app` forwards extra keyword arguments to the SDK's
+`streamable_http_app`. `/healthz` is a `build_asgi_app` feature: wrap the
+transport yourself when you need a probe that touches the database.
+
+```python
+from rhosocial.mcpserver import build_asgi_app
+
+app = build_asgi_app(
+    server.streamable_http_app(stateless_http=True),
+    config=CONFIG,
+    verifier=verifier,
+    health=probe,
+)
 ```
 
 ## Inspecting a deployment
@@ -208,7 +224,10 @@ The reasoning behind each of these, and the failure it prevents, is in
 
 ```bash
 python -m venv .venv3.14-ubuntu26.04
-.venv3.14-ubuntu26.04/bin/pip install -e ../python-activerecord
+# The DDL uses the *Statement names from fix/column-constraint-gates; a local
+# worktree of that branch works as well as the git URL.
+.venv3.14-ubuntu26.04/bin/pip install \
+  "git+https://github.com/rhosocial/python-activerecord.git@fix/column-constraint-gates"
 .venv3.14-ubuntu26.04/bin/pip install -e ".[dev]"
 
 export PYTHONPATH=src:tests
@@ -217,8 +236,23 @@ export PYTHONPATH=src:tests
 .venv3.14-ubuntu26.04/bin/mypy src/
 ```
 
-Tests run against a real SQLite database rather than mocks: the rules here are
-about what reaches a `WHERE` clause, and a mock cannot see that.
+SQLite is the default. `tests/config/scenarios.yaml` also describes the server
+backends, selected with `MCP_TEST_SCENARIO`:
+
+```bash
+MCP_TEST_SCENARIO=postgres_18 \
+MCP_TEST_DB_HOST=127.0.0.1 MCP_TEST_DB_PORT=5432 \
+MCP_TEST_DB_NAME=test_db MCP_TEST_DB_USER=root \
+MCP_TEST_DB_PASSWORD=password \
+.venv3.14-ubuntu26.04/bin/pytest tests/rhosocial/mcpserver_test/orm -q
+```
+
+The scenario names and their environment placeholders are in
+`tests/config/scenarios.yaml`. CI runs SQLite on Python 3.10–3.15 plus
+PostgreSQL 18, MySQL 9.7, MariaDB 13.0, SQL Server 2022 and Oracle Free 23.
+
+Tests run against a real database rather than mocks: the rules here are about
+what reaches a `WHERE` clause, and a mock cannot see that.
 
 ## License
 
