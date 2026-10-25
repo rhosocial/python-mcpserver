@@ -37,6 +37,8 @@ classifiers = [
 ]
 dependencies = [
     # Core ORM — the ORM mixins and the scoped/owned query classes build on it.
+    # The DDL/DML `*Statement` names come from fix/column-constraint-gates;
+    # publish a release cut from that branch before publishing this package.
     "rhosocial-activerecord>=1.0.0.dev30",
     # MCP SDK v2 — supplies MCPServer, TokenVerifier, AuthContextMiddleware and
     # the RFC 9728 metadata handler this library configures.

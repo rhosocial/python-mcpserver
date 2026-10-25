@@ -28,24 +28,24 @@ env:
   # should be able to see it without reading an install step.
   #
   # It is a git URL, not a version, and that is deliberate for now.  This
-  # package uses two things the newest published core release (1.0.0.dev29) does
-  # not have: the `IDataPreparationBehavior` save hook, and a `ColumnConstraint`
-  # that carries a dialect.  So the pin in pyproject.toml — `>=1.0.0.dev30` — is
-  # correct and unsatisfiable from any index, and pip's answer to that is a
-  # `ResolutionImpossible` wall that says nothing about why.
+  # package needs the column-constraint rebuild plus the DDL/DML `*Statement`
+  # renames (`CreateTableStatement`, `CreateIndexStatement`, ...) that live on
+  # fix/column-constraint-gates; the published 1.0.0.dev30 predates them.  The
+  # pin in pyproject.toml is therefore only a version floor, and a release cut
+  # from that branch must be published before this package is released.
   #
   # The ref is a **branch**, not a tag, and that is the cost of the current
   # arrangement: it moves, so two runs of the same commit can install different
   # core code, and a green run says nothing about what a release would install.
-  # When dev30 ships, replace the value below with
-  # `rhosocial-activerecord>=1.0.0.dev30`, delete the `preflight` job, and put
-  # the version check back in release.yml.  Nothing else changes.
+  # When a release is cut from that branch, replace the value below with
+  # `rhosocial-activerecord>=<that version>`, delete the `preflight` job, and
+  # put the version check back in release.yml.  Nothing else changes.
   #
   # pyproject.toml deliberately keeps a plain version specifier rather than a
   # git URL: PyPI refuses a direct-URL dependency at upload time, and a consumer
   # resolving this package could not clone the core anyway.
   CORE_SOURCE: >-
-    git+https://github.com/rhosocial/python-activerecord@feature/readonly-object-type-query-named-examples
+    git+https://github.com/rhosocial/python-activerecord@fix/column-constraint-gates
 
 jobs:
   preflight:

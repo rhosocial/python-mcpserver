@@ -134,13 +134,16 @@ async def tables(backend, config):
 
 
 def _create_notes_table(dialect, table: str):
-    from rhosocial.activerecord.backend.expression import CreateTableExpression
+    from rhosocial.activerecord.backend.expression.objects import Table as TableNode
+    from rhosocial.activerecord.backend.expression.statements.ddl_table import (
+        CreateTableStatement,
+    )
 
     from rhosocial.mcpserver.orm.ddl import column, serial_type_for
 
-    return CreateTableExpression(
+    return CreateTableStatement(
         dialect=dialect,
-        table=table,
+        table=TableNode(dialect, table),
         columns=[
             column(dialect, "id", serial_type_for(dialect), primary_key=True),
             column(dialect, "principal_id", "INTEGER", not_null=True),
@@ -151,13 +154,17 @@ def _create_notes_table(dialect, table: str):
 
 
 def _create_notes_index(dialect):
-    from rhosocial.activerecord.backend.expression import CreateIndexExpression
+    from rhosocial.activerecord.backend.expression.objects import Index as IndexNode
+    from rhosocial.activerecord.backend.expression.objects import Table as TableNode
+    from rhosocial.activerecord.backend.expression.statements.ddl_index import (
+        CreateIndexStatement,
+    )
 
-    return CreateIndexExpression(
+    return CreateIndexStatement(
         dialect,
-        f"idx_{NOTES}_principal_id",
-        NOTES,
-        ["principal_id"],
+        index=IndexNode(dialect, f"idx_{NOTES}_principal_id"),
+        table=TableNode(dialect, NOTES),
+        columns=["principal_id"],
         if_not_exists=True,
     )
 

@@ -18,15 +18,25 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from rhosocial.activerecord.backend.expression import (
-    CreateIndexExpression,
-    CreateTableExpression,
-    DropTableExpression,
+from rhosocial.activerecord.backend.dialect.exceptions import UnsupportedFeatureError
+from rhosocial.activerecord.backend.dialect.protocols.query.data_type import (
+    DataTypeSupport,
 )
-from rhosocial.activerecord.backend.expression.statements import (
+from rhosocial.activerecord.backend.expression.objects import Index as IndexNode
+from rhosocial.activerecord.backend.expression.objects import Table as TableNode
+from rhosocial.activerecord.backend.expression.statements.ddl_index import (
+    CreateIndexStatement,
+)
+from rhosocial.activerecord.backend.expression.statements.ddl_table import (
     ColumnConstraint,
-    ColumnConstraintType,
+    ColumnDefaultConstraint,
     ColumnDefinition,
+    ColumnForeignKeyConstraint,
+    ColumnNotNullConstraint,
+    ColumnPrimaryKeyConstraint,
+    ColumnUniqueConstraint,
+    CreateTableStatement,
+    DropTableStatement,
 )
 
 from .principal import (
@@ -38,7 +48,7 @@ from .principal import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    from rhosocial.activerecord.backend.expression.bases import SQLDialectBase
+    from rhosocial.activerecord.backend.dialect.base import SQLDialectBase
 
 __all__ = [
     "create_projection_table",
@@ -57,8 +67,29 @@ __all__ = [
 PRINCIPALS = "mcp_principals"
 
 
+def _type_support(dialect: SQLDialectBase) -> DataTypeSupport:
+    """Return *dialect* as a :class:`DataTypeSupport`, or fail clearly.
+
+    ``SQLDialectBase`` does not declare ``parse_type``; concrete dialects add it
+    through their type mixins.  Checking the capability here keeps the rest of
+    the module honest: a dialect that lacks it fails with a named error instead
+    of an ``AttributeError`` from inside a half-built DDL statement.
+    """
+    if not isinstance(dialect, DataTypeSupport):
+        raise UnsupportedFeatureError(
+            type(dialect).__name__,
+            "data type parsing",
+            "DDL rendering needs the DataTypeSupport capability",
+        )
+    return dialect
+
+
 def serial_type_for(dialect: SQLDialectBase) -> str:
     """The dialect's auto-increment primary-key column type.
+
+    ``SQLDialectBase`` is the public contract; ``parse_type`` is the optional
+    :class:`DataTypeSupport` capability that concrete dialects add through
+    their type mixins.  ``_type_support`` checks it before use.
 
     Not a constant, and the reason is a quiet one.  ``SERIAL`` is PostgreSQL's
     spelling.  SQLite accepts *any* type name in a column definition, so a
@@ -71,7 +102,7 @@ def serial_type_for(dialect: SQLDialectBase) -> str:
     So the type is resolved from the dialect's own affinity rules: if it does
     not know ``SERIAL``, it gets the plain integer that its rowid alias needs.
     """
-    parsed = dialect.parse_type("SERIAL")
+    parsed = _type_support(dialect).parse_type("SERIAL")
     if type(parsed).__name__ == "CustomType":
         return "INTEGER"
     return "SERIAL"
@@ -87,16 +118,15 @@ def create_projection_table(
     dialect: SQLDialectBase,
     *,
     extra_columns: Sequence[Any] = (),
-) -> CreateTableExpression:
+) -> CreateTableStatement:
     """``CREATE TABLE IF NOT EXISTS <prefix>_principals``.
 
     :param extra_columns: service-private ``ColumnDefinition`` objects, built
         by the caller so this module does not have to know their types.
     """
-    table = PRINCIPALS
-    return CreateTableExpression(
+    return CreateTableStatement(
         dialect=dialect,
-        table=table,
+        table=TableNode(dialect, PRINCIPALS),
         columns=[
             column(dialect, ID, serial_type_for(dialect), primary_key=True),
             # TEXT, not VARCHAR(n): a central id is an opaque string whose
@@ -115,7 +145,7 @@ def create_projection_table(
 
 def projection_indexes(
     dialect: SQLDialectBase,
-) -> tuple[CreateIndexExpression, ...]:
+) -> tuple[CreateIndexStatement, ...]:
     """Indexes for the projection table.
 
     The unique index on ``central_user_id`` is the one that matters: it is what
@@ -130,21 +160,21 @@ def projection_indexes(
     # `index` takes the *bare* table name; passing the already-prefixed one
     # would produce `idx_t_t_principals_...`, which is a valid identifier and so
     # would be created without complaint.
-    table = PRINCIPALS
+    table = TableNode(dialect, PRINCIPALS)
     return (
-        CreateIndexExpression(
+        CreateIndexStatement(
             dialect,
-            f"idx_{PRINCIPALS}_CENTRAL_USER_ID",
-            table,
-            [CENTRAL_USER_ID],
+            index=IndexNode(dialect, f"idx_{PRINCIPALS}_CENTRAL_USER_ID"),
+            table=table,
+            columns=[CENTRAL_USER_ID],
             unique=True,
             if_not_exists=True,
         ),
-        CreateIndexExpression(
+        CreateIndexStatement(
             dialect,
-            f"idx_{PRINCIPALS}_STATUS",
-            table,
-            [STATUS],
+            index=IndexNode(dialect, f"idx_{PRINCIPALS}_STATUS"),
+            table=table,
+            columns=[STATUS],
             if_not_exists=True,
         ),
     )
@@ -152,14 +182,16 @@ def projection_indexes(
 
 def drop_projection_table(
     dialect: SQLDialectBase,
-) -> DropTableExpression:
+) -> DropTableStatement:
     """``DROP TABLE IF EXISTS`` for the projection table.
 
     Only ever touches a prefixed name.  A service's database may be shared, and
     dropping another service's tables would destroy its data.
     """
-    return DropTableExpression(
-        dialect=dialect, table=PRINCIPALS, if_exists=True
+    return DropTableStatement(
+        dialect=dialect,
+        table=TableNode(dialect, PRINCIPALS),
+        if_exists=True,
     )
 
 
@@ -185,29 +217,39 @@ def column(
     constraints: list[ColumnConstraint] = []
     if primary_key:
         constraints.append(
-            ColumnConstraint(dialect, ColumnConstraintType.PRIMARY_KEY, name=f"pk_{name}")
+            ColumnConstraint(
+                dialect,
+                branch=ColumnPrimaryKeyConstraint(dialect),
+                name=f"pk_{name}",
+            )
         )
     if not_null:
-        constraints.append(ColumnConstraint(dialect, ColumnConstraintType.NOT_NULL))
+        constraints.append(
+            ColumnConstraint(dialect, branch=ColumnNotNullConstraint(dialect))
+        )
     if unique:
-        constraints.append(ColumnConstraint(dialect, ColumnConstraintType.UNIQUE))
+        constraints.append(
+            ColumnConstraint(dialect, branch=ColumnUniqueConstraint(dialect))
+        )
     if default is not None:
         constraints.append(
-            ColumnConstraint(dialect, ColumnConstraintType.DEFAULT, default_value=default)
+            ColumnConstraint(dialect, branch=ColumnDefaultConstraint(dialect, default))
         )
     if references is not None:
         table, target = references
         constraints.append(
             ColumnConstraint(
                 dialect,
-                ColumnConstraintType.FOREIGN_KEY,
-                foreign_key_reference=(table, [target]),
+                branch=ColumnForeignKeyConstraint(
+                    dialect,
+                    (TableNode(dialect, table), [target]),
+                ),
             )
         )
     return ColumnDefinition(
         dialect,
         name,
-        dialect.parse_type(sql_type),
+        _type_support(dialect).parse_type(sql_type),
         constraints=constraints or None,
     )
 

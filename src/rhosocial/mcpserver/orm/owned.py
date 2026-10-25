@@ -13,7 +13,7 @@ the statement is built, so the placeholder never reaches the database.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from rhosocial.activerecord.interface.update import IDataPreparationBehavior
 
@@ -37,7 +37,10 @@ class PrincipalOwnedMixin(IDataPreparationBehavior):
         ``Model.query()``.  That is the intent: management wants to see deleted
         rows too.  The name is loud on purpose, so ``grep`` finds every use.
         """
-        return cls.__query_class__(cls, principal_scope=False)
+        # ``__query_class__`` is supplied by the model's ``QueryMixin``, not by
+        # this mixin, so the type checker cannot see it on ``cls``.
+        query_class = cast(Any, cls).__query_class__
+        return query_class(cls, principal_scope=False)
 
     def prepare_save_data(self, data: dict, is_new: bool) -> dict:
         # Synchronous by necessity: the framework calls this from inside its
